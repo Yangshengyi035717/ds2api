@@ -19,6 +19,7 @@ import {
 import { useToast } from '@/hooks/use-toast'
 import { useAuthStore } from '@/stores/auth'
 import { ApiCallError } from '@/lib/api'
+import { consumeSse } from '@/lib/sse'
 import { ModelSelector } from '@/components/playground/ModelSelector'
 import { MessageList, type ChatMessage, type StreamingState } from '@/components/playground/MessageList'
 
@@ -117,10 +118,6 @@ export default function PlaygroundPage() {
         throw new ApiCallError(res.status, `HTTP ${res.status}: ${body.slice(0, 300)}`)
       }
 
-      const reader = res.body.getReader()
-      const decoder = new TextDecoder()
-      let buf = ''
-
       // Consume one "data: <json>" payload and accumulate its text.
       const handleEvent = (payload: string) => {
         if (payload === '[DONE]') return
@@ -141,34 +138,7 @@ export default function PlaygroundPage() {
         }
       }
 
-      // Parse SSE: events separated by a blank line, each "data: <json>"
-      // line; "data: [DONE]" terminates. CRLF is normalised so the split
-      // works no matter which line ending the transport uses.
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buf += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n')
-
-        let sep
-        while ((sep = buf.indexOf('\n\n')) !== -1) {
-          const event = buf.slice(0, sep)
-          buf = buf.slice(sep + 2)
-          for (const line of event.split('\n')) {
-            const trimmed = line.trim()
-            if (!trimmed.startsWith('data:')) continue
-            handleEvent(trimmed.slice(5).trim())
-          }
-        }
-      }
-
-      // Flush a trailing event that reached EOF without a closing blank line.
-      if (buf.trim()) {
-        for (const line of buf.split('\n')) {
-          const trimmed = line.trim()
-          if (!trimmed.startsWith('data:')) continue
-          handleEvent(trimmed.slice(5).trim())
-        }
-      }
+      await consumeSse(res, ({ data }) => handleEvent(data))
 
       setHistory([
         ...nextHistory,

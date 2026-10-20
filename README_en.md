@@ -158,6 +158,7 @@ Accounts are loaded only from `data/accounts.json`. Changes made in the WebUI Ac
 Other WebUI features include:
 
 - **Overview** — live request statistics (total/success/failure/latency/uptime) + account pool status overview.
+- **API Docs** — OpenAI / Anthropic integration guides with an embedded debugger for `/v1/models`, Chat Completions, and Messages.
 - **Playground** — online test chat (thinking/search toggles, supports reasoning process visualization).
 - **Settings** — read-only view of the currently effective runtime configuration.
 ---

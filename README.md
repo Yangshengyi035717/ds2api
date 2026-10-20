@@ -158,6 +158,7 @@ curl http://localhost:8080/v1/models \
 WebUI 其他功能包括：
 
 - **概览** — 实时请求统计（总量/成功/失败/延迟/运行时长）+ 账号池状态一览
+- **API 文档** — OpenAI / Anthropic 接入说明，内置 `/v1/models`、Chat Completions、Messages 在线调试器
 - **Playground** — 在线测试对话（单个模型 + 「思考模式」/「联网搜索」两个开关，支持推理过程可视化）
 - **设置** — 只读查看当前生效的运行时配置
 
