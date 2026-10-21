@@ -85,3 +85,7 @@ docker compose run --rm keepalive python keepalive.py --once
 | `REFRESHED` | 0 | token valid, new cookies persisted | none |
 | `TRANSIENT` | 3 | WAF challenge / upstream hiccup | retried next cycle |
 | `SESSION_INVALID` | 2 | login is dead (`40003` / z.ai `401`/`403`) | sign in again, update the account |
+
+The compose service deliberately uses `restart: "no"`. A revoked login cannot
+heal by restarting, so the worker exits and waits for an operator to import a
+new session before the container is started again.

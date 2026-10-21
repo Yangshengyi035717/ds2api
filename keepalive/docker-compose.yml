@@ -5,7 +5,10 @@ services:
       dockerfile: Dockerfile
     image: dsapi-keepalive:local
     container_name: dsapi-keepalive
-    restart: unless-stopped
+    # SESSION_INVALID is a terminal state: retrying cannot renew a revoked
+    # login and only creates a restart loop. Start the container again after
+    # importing fresh credentials.
+    restart: "no"
     network_mode: host
     environment:
       DS2API_URL: http://127.0.0.1:3011
