@@ -1,11 +1,12 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Loader2, Plus, Save } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { post, put, ApiCallError } from '@/lib/api'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { post, put, get, ApiCallError } from '@/lib/api'
 import { toast } from '@/hooks/use-toast'
-import type { Account } from '@/lib/types'
+import type { Account, ProxiesResponse, ProxyConfig } from '@/lib/types'
 
 interface Props {
   /** When set, the form is in "edit" mode. */
@@ -19,14 +20,32 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
   const [email, setEmail] = useState(account?.email ?? '')
   const [token, setToken] = useState('')
   const [cookies, setCookies] = useState('')
+  const [proxyId, setProxyId] = useState(account?.proxy_id ?? '')
+  const [proxies, setProxies] = useState<ProxyConfig[]>([])
   const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    get<ProxiesResponse>('/admin/api/proxies')
+      .then((result) => {
+        if (!cancelled) setProxies(result.proxies)
+      })
+      .catch((e) => {
+        if (cancelled) return
+        const msg = e instanceof ApiCallError ? e.message : String(e)
+        toast({ title: '加载代理池失败', description: msg, variant: 'destructive' })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const handleSave = async () => {
     if (busy) return
     setBusy(true)
     try {
       if (isEdit && account) {
-        const body: Record<string, string> = { email }
+        const body: Record<string, string> = { email, proxy_id: proxyId }
         if (token) body.token = token
         if (cookies) body.cookies = cookies
         await put(`/admin/api/accounts/${encodeURIComponent(account.id)}`, body)
@@ -44,12 +63,14 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
           token,
           cookies,
           email: email || '',
+          proxy_id: proxyId,
         })
         toast({ title: '账号添加成功', variant: 'success' })
         onSaved(res.account)
         setEmail('')
         setToken('')
         setCookies('')
+        setProxyId('')
       }
     } catch (e) {
       const msg = e instanceof ApiCallError ? e.message : String(e)
@@ -92,6 +113,29 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
           autoComplete="off"
           className="font-mono text-xs"
         />
+      </div>
+      <div className="space-y-1.5">
+        <Label>出口代理</Label>
+        <Select value={proxyId || '__none__'} onValueChange={(value) => setProxyId(value === '__none__' ? '' : value)}>
+          <SelectTrigger>
+            <SelectValue placeholder="选择代理…" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__none__">不使用代理</SelectItem>
+            {proxies.map((proxy) => {
+              const boundByOther = proxy.bound_count > 0 && proxy.id !== account?.proxy_id
+              return (
+                <SelectItem key={proxy.id} value={proxy.id} disabled={!proxy.enabled || boundByOther}>
+                  {proxy.label} · {proxy.url_preview}
+                  {!proxy.enabled ? '（停用）' : boundByOther ? '（已绑定）' : ''}
+                </SelectItem>
+              )
+            })}
+          </SelectContent>
+        </Select>
+        <p className="text-[11px] text-muted-foreground">
+          每个代理默认只能绑定一个账号，避免多个账号共用同一出口 IP。代理在「代理池」菜单中维护。
+        </p>
       </div>
       <div className="flex items-center gap-2 pt-2">
         <Button onClick={handleSave} disabled={busy}>

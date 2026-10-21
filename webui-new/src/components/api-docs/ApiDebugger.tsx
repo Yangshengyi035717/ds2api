@@ -202,7 +202,11 @@ function extractNonstream(
   }
 }
 
-export function ApiDebugger() {
+interface ApiDebuggerProps {
+  defaultModel?: string
+}
+
+export function ApiDebugger({ defaultModel = 'deepseek-chat' }: ApiDebuggerProps) {
   const adminToken = useAuthStore((state) => state.token)
   const { toast } = useToast()
   const controllerRef = useRef<AbortController | null>(null)
@@ -210,7 +214,7 @@ export function ApiDebugger() {
   const [endpoint, setEndpoint] = useState<DebugEndpoint>('chat')
   const [apiKey, setApiKey] = useState('')
   const [showApiKey, setShowApiKey] = useState(false)
-  const [model, setModel] = useState('deepseek-chat')
+  const [model, setModel] = useState(defaultModel)
   const [systemPrompt, setSystemPrompt] = useState('')
   const [userPrompt, setUserPrompt] = useState('请用一句话介绍你自己。')
   const [stream, setStream] = useState(true)
@@ -220,6 +224,7 @@ export function ApiDebugger() {
   const [result, setResult] = useState<DebugResult>(EMPTY_RESULT)
 
   useEffect(() => () => controllerRef.current?.abort(), [])
+  useEffect(() => setModel(defaultModel), [defaultModel])
 
   const requestBody = useMemo(() => {
     if (endpoint === 'models') return null

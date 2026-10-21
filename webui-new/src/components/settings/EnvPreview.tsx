@@ -29,6 +29,9 @@ interface EnvInfoResponse {
     allow_credentials: boolean
   }
   trusted_proxies: string[]
+  proxies_total: number
+  model_name: string
+  model_name_source: string
   model_routes_configured: boolean
   rate_limit: {
     enabled: boolean
@@ -129,6 +132,7 @@ export function EnvPreview() {
         <CardContent className="space-y-1.5 text-sm">
           <Row k="总计" v={String(info.accounts_total)} />
           <Row k="配置方式" v="WebUI / data/accounts.json" />
+          <Row k="代理池条目" v={String(info.proxies_total)} />
         </CardContent>
       </Card>
 
@@ -137,6 +141,17 @@ export function EnvPreview() {
           <CardTitle className="text-base">行为</CardTitle>
         </CardHeader>
         <CardContent className="space-y-1.5 text-sm">
+          <Row k="公开模型名" v={info.model_name} />
+          <Row
+            k="模型名来源"
+            v={
+              {
+                webui: 'WebUI 配置',
+                env: '.env 初始值',
+                default: '程序默认值',
+              }[info.model_name_source] ?? info.model_name_source
+            }
+          />
           <Row k="MODEL_ROUTES" v={info.model_routes_configured ? '已配置' : '未配置（仅使用 MODE/THINKING/SEARCH）'} />
           <Row k="限流" v={info.rate_limit.enabled ? `启用 (per-key=${info.rate_limit.per_key}, per-ip=${info.rate_limit.per_ip})` : '关闭'} />
           <Row k="SESSION_CACHE_TTL" v={info.session_cache_ttl === 0 ? '禁用' : `${info.session_cache_ttl} 秒`} />

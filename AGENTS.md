@@ -113,7 +113,7 @@
 
 ### v3.0.0（2026-06）：React WebUI 重写
 
-- 管理面板从 vanilla JS 重写为 **Vite + React 18 + TypeScript + shadcn/ui** SPA（`webui-new/`），7 个页面（登录 / 概览 / 账号池 / API 文档 / Playground / 设置 / 404）
+- 管理面板从 vanilla JS 重写为 **Vite + React 18 + TypeScript + shadcn/ui** SPA（`webui-new/`），8 个页面（登录 / 概览 / 账号池 / 代理池 / API 文档 / Playground / 设置 / 404）
 - 新增 `stats_history.py`（30s 快照滚动窗口）、`GET /admin/api/history`、`GET /admin/api/env`
 - WebUI 产物位于 `webui-new/dist/`，由 `server.py` 在 `/webui/*` 下伺服；旧 `webui/` 已删除
 - **构建要求**：vite `base: '/webui/'` + react-router `basename: '/webui'`，两者缺失会导致资源 404 白屏
@@ -211,6 +211,7 @@ D:\the llaa\DS反代 --pre\
 ├── adapter.py             # DeepSeek API 适配器（PoW、会话、SSE 解析）
 ├── anthropic_format.py    # Anthropic /v1/messages 格式转换层
 ├── account_pool.py        # 多账号池管理（CRUD、状态追踪、轮询分配、健康检查）
+├── proxy_pool.py          # 账号绑定代理池（CRUD、连通性检测、加密持久化）
 ├── admin.py               # 管理后台 API（密码认证、请求统计、账号池管理）
 ├── tool_dsml.py           # DSML 格式解析器（工具调用协议）
 ├── tool_sieve.py          # 流式筛分引擎（实时检测工具调用标签）
@@ -237,6 +238,7 @@ D:\the llaa\DS反代 --pre\
 | `adapter.py` | 与 DeepSeek API 通信、PoW 求解、SSE 流解析、会话创建 | HTTP 路由、OpenAI/Anthropic 格式 |
 | `anthropic_format.py` | Anthropic `/v1/messages` 请求解析、响应组装、SSE 生成 | DeepSeek 协议、HTTP 路由 |
 | `account_pool.py` | 多账号 CRUD、状态追踪（idle/busy/error）、轮询分配、健康检查/重登录 | HTTP 路由、DeepSeek 协议 |
+| `proxy_pool.py` | 代理池 CRUD、HTTP/SOCKS 代理校验、连通性检测、Fernet 加密持久化 | 账号选择、HTTP 路由 |
 | `admin.py` | 管理后台 API 端点（密码认证、统计查询、账号池 CRUD、重登录触发） | 前端渲染、DeepSeek 协议 |
 | `tool_dsml.py` | DSML XML 解析与生成、工具提示词构建 | 流式检测、HTTP |
 | `tool_sieve.py` | 流式文本中实时检测 DSML 工具调用标签 | 协议解析、HTTP |
@@ -1846,7 +1848,7 @@ class ContentPart(BaseModel):
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `MODEL_NAME` | `deepseek-chat` | 本代理服务的**唯一**模型名：`/v1/models` 与 API 响应都用它；不影响上游转发（上游只有一个模型） |
+| `MODEL_NAME` | `deepseek-chat` | 首次启动的公开模型名默认值；WebUI「设置 → 模型名称」会写入 `data/runtime_config.json` 并优先使用，保存后即时生效 |
 | `PORT` | `8080` | 服务器监听端口 |
 | `MODEL_ROUTES` | `""` | JSON 路由表：model 名 → 能力预设（`"default"`/`"thinking"` 或 dict） |
 | `MODE` | `auto` | **已降级**（v3.3.8）：`quick`≡关闭思考、`expert`≡开启思考，不再改 `model_type`；仅当 `MODEL_ROUTES`/`THINKING`/客户端都没给出结论时生效 |
@@ -1868,6 +1870,8 @@ class ContentPart(BaseModel):
 | `MODEL_ROUTES` | `""` | JSON 路由表，model 名 → 能力预设（`default`/`thinking` 简写或 dict） | ⭐多模型路由 |
 | `MODE` / `THINKING` / `SEARCH` | `auto` | thinking/search 两个独立维度；`MODE` 已降级为旧配置兼容（不再改 `model_type`） | ⭐强制模式 |
 | `ACCOUNT_STORE_PATH` | `data/accounts.json` | 账号池持久化文件路径 | ⭐非交互账号池 |
+| `PROXY_STORE_PATH` | `data/proxies.json` | 代理池持久化文件路径 | ⭐出口隔离 |
+| `PROXY_CHECK_URL` | `https://chat.deepseek.com/` | 代理池「检测」按钮的连通性目标 | |
 | `DEEPSEEK_ENCRYPTION_KEY` | `""` | Fernet key，accounts.json 加密(v2) | ⭐公网安全 |
 | `CLIENT_RPM_PER_KEY` | `60` | 每 key 每分钟请求数(0=不限) | ⭐限流 |
 | `CLIENT_RPM_PER_IP` | `120` | 每 IP 每分钟请求数(0=不限) | ⭐限流 |
@@ -1950,6 +1954,8 @@ MODEL_NAME = os.environ.get("MODEL_NAME", "deepseek-chat")
 ```
 
 账号凭证由 `AccountPool` 从 `data/accounts.json` 加载，或通过 WebUI 管理；`adapter.py` 构造时必须显式传入凭证。`adapter.py` 和 `server.py` 仍调用 `load_dotenv()` 读取其他运行配置。
+
+公开模型名的运行时优先级为：`data/runtime_config.json`（WebUI 设置）→ `.env` 的 `MODEL_NAME` → `deepseek-chat`。WebUI 保存后通过 `RuntimeConfigStore` 原子写入，并立即更新 `/v1/models`、OpenAI/Anthropic 响应中的 `model` 字段及统计记录，无需重启。
 
 ### 14.3 Token 和 Cookie 获取
 
@@ -2058,6 +2064,7 @@ class Account:
     token: str            # DeepSeek Bearer Token
     cookies: str          # DeepSeek Cookie
     email: str            # 显示用标识
+    proxy_id: str         # 绑定的代理池条目 ID（空 = 直连）
     state: str            # idle | busy | error
     error_count: int
     last_error: str
@@ -2114,6 +2121,7 @@ def check_health(acct) -> bool:
       "email": "acc-001",
       "token": "<DeepSeek Bearer token>",
       "cookies": "cf_clearance=xxx; session=yyy; ...",
+      "proxy_id": "proxy_xxx",
       "created_at": 1781234567,
       "updated_at": 1781234567
     },
@@ -2122,6 +2130,7 @@ def check_health(acct) -> bool:
       "email": "acc-002",
       "token": "<token2>",
       "cookies": "<cookies2>",
+      "proxy_id": "proxy_yyy",
       "created_at": 1781234567,
       "updated_at": 1781234567
     }
@@ -2129,7 +2138,7 @@ def check_health(acct) -> bool:
 }
 ```
 
-- 字段：`id`(可选,默认自动生成)、`email`(显示标识)、`token`、`cookies`(必填两个)、`created_at`/`updated_at`(可选,整数 epoch 秒)。
+- 字段：`id`(可选,默认自动生成)、`email`(显示标识)、`token`、`cookies`(必填两个)、`proxy_id`(可选,绑定代理池条目)、`created_at`/`updated_at`(可选,整数 epoch 秒)。
 - `version`：`1`(明文) 或 `2`(Fernet 加密)。缺省按明文解析。
 - 该文件**必须** `chmod 600`、所在目录 `700`。含明文 DeepSeek token+cookie，泄露=账号被滥用。
 
@@ -2160,6 +2169,17 @@ python -m uvicorn server:app --host 127.0.0.1 --port 8080
 
 ---
 
+### 15.9 代理池与出口隔离
+
+- `proxy_pool.py` 维护 `data/proxies.json`；代理地址属于敏感配置，启用 `DEEPSEEK_ENCRYPTION_KEY` 时使用 Fernet v2 加密。
+- 账号只持久化 `proxy_id`；`Account.adapter` 通过代理池解析实际 URL，并把它传给 `DeepSeekAdapter(proxy=...)`。
+- 一个代理默认只能绑定一个账号。`AccountPool.add/update` 会拒绝重复绑定；手工写文件造成重复时，相关账号加载为 `error`，不会偷偷共用出口。
+- 代理被停用、删除或无法解析时，绑定账号请求会报错，**不会静默回退直连**。
+- 修改代理 URL 会使绑定账号的缓存 adapter 失效；删除仍被账号绑定的代理返回 409。
+- 代理检测通过 `curl_cffi` 访问 `PROXY_CHECK_URL`（默认 `https://chat.deepseek.com/`），只记录状态码/耗时/错误，不持久化响应内容。
+
+---
+
 ## 16. 管理后台 (Admin API)
 
 ### 19.1 设计概述
@@ -2178,7 +2198,12 @@ python -m uvicorn server:app --host 127.0.0.1 --port 8080
 | `POST` | `/admin/api/login` | 密码登录，返回 token |
 | `GET` | `/admin/api/stats` | 请求统计（总量/成功/失败/平均延迟/tokens/运行时长） |
 | `GET` | `/admin/api/accounts` | 账号列表 + 池状态汇总（total/idle/busy/error） |
-| `POST` | `/admin/api/accounts` | 添加账号（body: token, cookies, email） |
+| `POST` | `/admin/api/accounts` | 添加账号（body: token, cookies, email, proxy_id） |
+| `GET` | `/admin/api/proxies` | 代理池列表 + 绑定账号 + 最近检测结果 |
+| `POST` | `/admin/api/proxies` | 添加代理（label, url, enabled） |
+| `PUT` | `/admin/api/proxies/{id}` | 修改代理；绑定账号的缓存连接自动重建 |
+| `DELETE` | `/admin/api/proxies/{id}` | 删除代理；仍绑定账号时返回 409 |
+| `POST` | `/admin/api/proxies/{id}/test` | 通过代理访问 `PROXY_CHECK_URL` 并记录连通性 |
 | `DELETE` | `/admin/api/accounts/{index}` | 删除账号 |
 | `POST` | `/admin/api/accounts/{index}/relogin` | 重登录 error 账号 |
 
@@ -2205,7 +2230,7 @@ python -m uvicorn server:app --host 127.0.0.1 --port 8080
 - **路由**：`createBrowserRouter(..., { basename: '/webui' })`——SPA 位于 `/webui/*`，深链接刷新由 `server.py` 的 `/webui/{rest}` SPA fallback 回 index.html
 - **构建**：`webui-new/` 下 `npm install && npm run build`（或 `scripts/build.bat`），产物 `webui-new/dist/`。vite `base: '/webui/'` 使资源引用带前缀（改回 `/` 会导致 JS/CSS 404 白屏）
 - **鉴权**：admin token 存 `localStorage`（zustand persist，key `ds2api-auth`）；`api()` 包装器统一带 `Authorization: Bearer <admin-token>`，401 自动 logout 跳 `/login`。`/v1/*` 现也接受该 admin token（见 14.1/18.1）
-- **页面**：登录 / 概览（统计卡 + 请求量/延迟 Recharts 图 + 账号池状态）/ 账号池（表格 + 抽屉详情 + 添加/编辑/删除 + 重登）/ API 文档（OpenAI/Anthropic 接入示例 + `/v1/models`、Chat Completions、Messages 内嵌调试器）/ Playground（流式对话，参数仅暴露后端真实转发的字段，reasoning 折叠显示）/ 设置（`/admin/api/env` 只读）/ 404
+- **页面**：登录 / 概览（统计卡 + 请求量/延迟 Recharts 图 + 账号池状态）/ 账号池（表格 + 抽屉详情 + 添加/编辑/删除 + 重登 + 代理绑定）/ 代理池（列表、添加/编辑/删除、连通性检测、绑定账号展示）/ API 文档（OpenAI/Anthropic 接入示例 + `/v1/models`、Chat Completions、Messages 内嵌调试器）/ Playground（流式对话，参数仅暴露后端真实转发的字段，reasoning 折叠显示）/ 设置（模型名称可视化配置、API Key、`/admin/api/env` 只读）/ 404
 - **主题**：浅色/深色/跟随系统，`localStorage` 持久化（key `ds2api-theme`），`main.tsx` 挂载前提前 `applyTheme` 防闪烁
 - **轮询**：概览页 stats 5s / accounts 10s / history 30s，账号页 10s（`useApi` hook 带 AbortController + reqId 防竞态）
 

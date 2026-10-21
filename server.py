@@ -60,13 +60,19 @@ from ip_utils import get_real_client_ip, is_trusted_proxy
 from model_router import ModelRouter
 from session_cache import SessionCache, ChatSession, delta_prompt
 from api_key_store import get_api_key_store
+from runtime_config import get_runtime_config
 
 load_dotenv()
 configure_from_env()
 log = get_logger("server")
 API_KEY_STORE = get_api_key_store()
 
-MODEL_NAME = os.environ.get("MODEL_NAME", "deepseek-chat")
+
+def _model_name() -> str:
+    """Return the current public model name (WebUI runtime config first)."""
+    return get_runtime_config().model_name
+
+
 #: Legacy mode knob.  DeepSeek merged quick/expert into a single model (the only
 #: remaining difference is ``thinking_enabled``), so ``MODE`` no longer selects a
 #: model: ``MODE=expert`` is honoured as "default thinking ON" for backward
@@ -75,12 +81,6 @@ MODEL_NAME = os.environ.get("MODEL_NAME", "deepseek-chat")
 MODE = os.environ.get("MODE", "auto").strip().lower()
 THINKING = os.environ.get("THINKING", "auto").strip().lower()
 SEARCH = os.environ.get("SEARCH", "auto").strip().lower()
-#: Model names advertised on /v1/models. This proxy serves a **single** model:
-#: whether it thinks is configured server-side (``THINKING``), not selected by
-#: picking a different model name. Legacy names such as ``deepseek-reasoner``
-#: are still accepted as aliases (see ``model_router.LEGACY_MODEL_ALIASES``) but
-#: are not advertised and no longer map to a different behaviour.
-DEFAULT_MODEL_NAMES = [MODEL_NAME]
 HOST = os.environ.get("HOST", "127.0.0.1").strip()
 PORT = int(os.environ.get("PORT", "8080"))
 ALLOW_UNAUTHENTICATED_API = os.environ.get("ALLOW_UNAUTHENTICATED_API", "false").strip().lower() in {"1", "true", "yes", "on"}
@@ -92,7 +92,7 @@ ALLOW_CREDENTIALS = bool(ALLOWED_ORIGINS) and os.environ.get("ALLOW_CORS_CREDENT
 
 
 RATE_LIMITER = RateLimiter()
-MODEL_ROUTER = ModelRouter(models=DEFAULT_MODEL_NAMES)
+MODEL_ROUTER = ModelRouter(models=[])
 SESSION_CACHE = SessionCache()
 
 
@@ -358,7 +358,7 @@ class ToolDef(BaseModel):
 
 
 class ChatCompletionRequest(BaseModel):
-    model: Optional[str] = MODEL_NAME
+    model: Optional[str] = None
     messages: list[ChatMessage]
     stream: Optional[bool] = False
     max_tokens: Optional[int] = None
@@ -686,7 +686,7 @@ def _openai_chunk(proxy_id: str, content: str = "", finish: bool = False,
         "id": proxy_id,
         "object": "chat.completion.chunk",
         "created": int(time.time()),
-        "model": MODEL_NAME,
+        "model": _model_name(),
         "choices": [choice],
     }
     return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
@@ -708,7 +708,7 @@ def _emit_tool_calls_chunks(tool_calls: list[dict], chat_id: str) -> list[str]:
                 "function": {"name": tc["function"]["name"], "arguments": ""},
             }],
         }
-        chunks.append(f"data: {json.dumps({'id': chat_id, 'object': 'chat.completion.chunk', 'created': created, 'model': MODEL_NAME, 'choices': [{'index': 0, 'delta': delta, 'finish_reason': None}]}, ensure_ascii=False)}\n\n")
+        chunks.append(f"data: {json.dumps({'id': chat_id, 'object': 'chat.completion.chunk', 'created': created, 'model': _model_name(), 'choices': [{'index': 0, 'delta': delta, 'finish_reason': None}]}, ensure_ascii=False)}\n\n")
         # 次帧：arguments
         delta2 = {
             "tool_calls": [{
@@ -716,9 +716,9 @@ def _emit_tool_calls_chunks(tool_calls: list[dict], chat_id: str) -> list[str]:
                 "function": {"arguments": tc["function"]["arguments"]},
             }],
         }
-        chunks.append(f"data: {json.dumps({'id': chat_id, 'object': 'chat.completion.chunk', 'created': created, 'model': MODEL_NAME, 'choices': [{'index': 0, 'delta': delta2, 'finish_reason': None}]}, ensure_ascii=False)}\n\n")
+        chunks.append(f"data: {json.dumps({'id': chat_id, 'object': 'chat.completion.chunk', 'created': created, 'model': _model_name(), 'choices': [{'index': 0, 'delta': delta2, 'finish_reason': None}]}, ensure_ascii=False)}\n\n")
     # finish
-    chunks.append(f"data: {json.dumps({'id': chat_id, 'object': 'chat.completion.chunk', 'created': created, 'model': MODEL_NAME, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'tool_calls'}]}, ensure_ascii=False)}\n\n")
+    chunks.append(f"data: {json.dumps({'id': chat_id, 'object': 'chat.completion.chunk', 'created': created, 'model': _model_name(), 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'tool_calls'}]}, ensure_ascii=False)}\n\n")
     return chunks
 
 
@@ -752,7 +752,7 @@ async def list_models(request: Request):
     rate_headers = _check_rate_limit(request)
     # One model only. MODEL_ROUTES is an optional advanced override for per-name
     # capability presets; when it is set its names are what clients can ask for.
-    names = MODEL_ROUTER.models or [MODEL_NAME]
+    names = MODEL_ROUTER.models or [_model_name()]
     return JSONResponse(
         ModelList(data=[
             ModelInfo(id=name, created=int(time.time())) for name in names
@@ -857,12 +857,12 @@ def _anthropic_nonstream(msg_id: str, prompt: str, tool_names: list[str],
             acq.record_message_id(ready_out["response_message_id"],
                                   ready_out.get("session_id"),
                                   full_prompt=prompt)
-        get_stats().record(MODEL_NAME, (time.time() - t0) * 1000)
+        get_stats().record(_model_name(), (time.time() - t0) * 1000)
     except RateLimitError as e:
         # Match the OpenAI endpoint: upstream throttling is a client-visible
         # 429, not an opaque Anthropic 500. This includes account mute errors
         # because UserMutedError derives from RateLimitError.
-        get_stats().record(MODEL_NAME, 0, success=False)
+        get_stats().record(_model_name(), 0, success=False)
         if cache_key:
             SESSION_CACHE.invalidate(cache_key)
         raise HTTPException(
@@ -870,18 +870,18 @@ def _anthropic_nonstream(msg_id: str, prompt: str, tool_names: list[str],
             detail=f"上游限流：{e.args[0] if e.args else '请求过于频繁'}，请稍后重试",
         )
     except UpstreamHintError as e:
-        get_stats().record(MODEL_NAME, 0, success=False)
+        get_stats().record(_model_name(), 0, success=False)
         pool.mark_error(acq.acct, str(e))
         raise HTTPException(status_code=502, detail=str(e))
     except UpstreamEmptyError:
         # Empty upstream bodies are transient and should not poison the
         # account pool, but the client still needs a meaningful 502.
-        get_stats().record(MODEL_NAME, 0, success=False)
+        get_stats().record(_model_name(), 0, success=False)
         if cache_key:
             SESSION_CACHE.invalidate(cache_key)
         raise HTTPException(status_code=502, detail="上游返回空响应（可能触发限流），请稍后重试")
     except Exception as e:
-        get_stats().record(MODEL_NAME, 0, success=False)
+        get_stats().record(_model_name(), 0, success=False)
         pool.mark_error(acq.acct, str(e))
         raise
     finally:
@@ -889,7 +889,7 @@ def _anthropic_nonstream(msg_id: str, prompt: str, tool_names: list[str],
 
     tool_calls, cleaned = parse_dsml_tool_calls(content, tool_names)
     return build_nonstream_response(
-        msg_id, MODEL_NAME,
+        msg_id, _model_name(),
         content_text=cleaned or content,
         tool_calls=tool_calls,
         thinking_text=thinking,
@@ -906,7 +906,7 @@ async def _anthropic_stream(msg_id: str, prompt: str, tool_names: list[str],
         eff = acq.prepare_prompt(prompt)
         ds_id = acq.create_session()
     except Exception as e:
-        get_stats().record(MODEL_NAME, 0, success=False)
+        get_stats().record(_model_name(), 0, success=False)
         pool.mark_error(acq.acct, str(e))
         acq.release()
         raise
@@ -917,7 +917,7 @@ async def _anthropic_stream(msg_id: str, prompt: str, tool_names: list[str],
         ready_out: dict = {}
         try:
             for event in stream_response(
-                msg_id, MODEL_NAME,
+                msg_id, _model_name(),
                 acq.adapter.chat_stream(ds_id, eff,
                                        model_type=model_type,
                                        thinking_enabled=thinking_mode,
@@ -932,9 +932,9 @@ async def _anthropic_stream(msg_id: str, prompt: str, tool_names: list[str],
                 acq.record_message_id(ready_out["response_message_id"],
                                       ready_out.get("session_id"),
                                       full_prompt=prompt)
-            get_stats().record(MODEL_NAME, (time.time() - t0) * 1000)
+            get_stats().record(_model_name(), (time.time() - t0) * 1000)
         except Exception as e:
-            get_stats().record(MODEL_NAME, (time.time() - t0) * 1000, success=False)
+            get_stats().record(_model_name(), (time.time() - t0) * 1000, success=False)
             if isinstance(e, (RateLimitError, UpstreamEmptyError)):
                 if cache_key:
                     SESSION_CACHE.invalidate(cache_key)
@@ -979,30 +979,30 @@ def _handle_nonstream(proxy_id: str, prompt: str, tools: list[ToolDef] | None = 
                                   ready_out.get("session_id"),
                                   full_prompt=prompt)
         completion_tokens = count_text(content) + count_text(thinking)
-        get_stats().record(MODEL_NAME, (time.time() - t0) * 1000,
+        get_stats().record(_model_name(), (time.time() - t0) * 1000,
                            prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
     except RateLimitError as e:
         # Rate limiting is a transient upstream state, not a credential
         # problem — do NOT mark the account as errored, or the pool would
         # drain to 503 once the limiter cools down. Invalidate the cached
         # session so the next call starts fresh.
-        get_stats().record(MODEL_NAME, 0, success=False)
+        get_stats().record(_model_name(), 0, success=False)
         if cache_key:
             SESSION_CACHE.invalidate(cache_key)
         raise HTTPException(status_code=429, detail=f"上游限流：{e.args[0] if e.args else '请求过于频繁'}，请稍后重试")
     except UpstreamHintError as e:
-        get_stats().record(MODEL_NAME, 0, success=False)
+        get_stats().record(_model_name(), 0, success=False)
         pool.mark_error(acq.acct, str(e))
         raise HTTPException(status_code=502, detail=str(e))
     except UpstreamEmptyError as e:
         # Transient empty responses (stale pooled connection / upstream
         # hiccup) — retried in the adapter already; do not poison the pool.
-        get_stats().record(MODEL_NAME, 0, success=False)
+        get_stats().record(_model_name(), 0, success=False)
         if cache_key:
             SESSION_CACHE.invalidate(cache_key)
         raise HTTPException(status_code=502, detail="上游返回空响应（可能触发限流），请稍后重试")
     except Exception as e:
-        get_stats().record(MODEL_NAME, 0, success=False)
+        get_stats().record(_model_name(), 0, success=False)
         pool.mark_error(acq.acct, str(e))
         raise
     finally:
@@ -1017,7 +1017,7 @@ def _handle_nonstream(proxy_id: str, prompt: str, tools: list[ToolDef] | None = 
             "id": proxy_id,
             "object": "chat.completion",
             "created": int(time.time()),
-            "model": MODEL_NAME,
+            "model": _model_name(),
             "choices": [{
                 "index": 0,
                 "message": {
@@ -1050,7 +1050,7 @@ def _handle_nonstream(proxy_id: str, prompt: str, tools: list[ToolDef] | None = 
         "id": proxy_id,
         "object": "chat.completion",
         "created": int(time.time()),
-        "model": MODEL_NAME,
+        "model": _model_name(),
         "choices": [{
             "index": 0,
             "message": message,
@@ -1076,7 +1076,7 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
         eff = acq.prepare_prompt(prompt)
         ds_id = acq.create_session()
     except Exception as e:
-        get_stats().record(MODEL_NAME, 0, success=False, prompt_tokens=prompt_tokens)
+        get_stats().record(_model_name(), 0, success=False, prompt_tokens=prompt_tokens)
         pool.mark_error(acq.acct, str(e))
         acq.release()
         raise
@@ -1191,11 +1191,11 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
             yield _openai_chunk(proxy_id, finish=True)
             yield "data: [DONE]\n\n"
             completion_tokens = count_text("".join(completion_parts))
-            get_stats().record(MODEL_NAME, (time.time() - t0) * 1000,
+            get_stats().record(_model_name(), (time.time() - t0) * 1000,
                                prompt_tokens=prompt_tokens,
                                completion_tokens=completion_tokens)
         except Exception as e:
-            get_stats().record(MODEL_NAME, (time.time() - t0) * 1000, success=False,
+            get_stats().record(_model_name(), (time.time() - t0) * 1000, success=False,
                                prompt_tokens=prompt_tokens)
             # Rate limit / transient empty responses are not credential
             # failures — keep the account usable instead of draining the pool.
@@ -1211,7 +1211,7 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
                 "id": proxy_id,
                 "object": "chat.completion.chunk",
                 "created": int(time.time()),
-                "model": MODEL_NAME,
+                "model": _model_name(),
                 "choices": [{
                     "index": 0,
                     "delta": {},

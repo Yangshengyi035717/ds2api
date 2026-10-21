@@ -16,6 +16,8 @@ from ip_utils import get_real_client_ip, is_trusted_proxy
 from logger import get_logger
 from stats_history import get_history, start_sampler
 from api_key_store import get_api_key_store
+from runtime_config import get_runtime_config
+from proxy_pool import get_proxy_pool
 
 log = get_logger("admin")
 
@@ -197,12 +199,14 @@ class AccountAddRequest(BaseModel):
     token: str
     cookies: str
     email: str | None = ""
+    proxy_id: str | None = ""
 
 
 class AccountUpdateRequest(BaseModel):
     token: str | None = None
     cookies: str | None = None
     email: str | None = None
+    proxy_id: str | None = None
 
 
 class AccountReloginResponse(BaseModel):
@@ -212,6 +216,22 @@ class AccountReloginResponse(BaseModel):
 
 class ApiKeyCreateRequest(BaseModel):
     name: str
+
+
+class RuntimeConfigUpdateRequest(BaseModel):
+    model_name: str
+
+
+class ProxyAddRequest(BaseModel):
+    label: str | None = ""
+    url: str
+    enabled: bool = True
+
+
+class ProxyUpdateRequest(BaseModel):
+    label: str | None = None
+    url: str | None = None
+    enabled: bool | None = None
 
 
 # ── Router ────────────────────────────────────────────────────
@@ -235,6 +255,27 @@ def _pool_error(e: Exception):
         raise HTTPException(status_code=409, detail=str(e))
     if isinstance(e, ValueError):
         raise HTTPException(status_code=400, detail=str(e))
+    raise e
+
+
+def _proxy_account_map() -> dict[str, list[str]]:
+    result: dict[str, list[str]] = {}
+    for account in get_pool().get_all():
+        proxy_id = str(account.get("proxy_id") or "")
+        if proxy_id:
+            result.setdefault(proxy_id, []).append(
+                str(account.get("email") or account.get("id") or "")
+            )
+    return result
+
+
+def _proxy_error(e: Exception):
+    if isinstance(e, KeyError):
+        raise HTTPException(status_code=404, detail=str(e).strip("'"))
+    if isinstance(e, ValueError):
+        raise HTTPException(status_code=400, detail=str(e))
+    if isinstance(e, OSError):
+        raise HTTPException(status_code=500, detail=f"无法保存代理池：{e}")
     raise e
 
 
@@ -289,6 +330,112 @@ async def revoke_api_key(key_id: str, request: Request):
     if not get_api_key_store().revoke_key(key_id):
         raise HTTPException(status_code=404, detail="API key not found")
     return {"ok": True}
+
+
+@router.get("/runtime-config")
+async def runtime_config(request: Request, response: Response):
+    _check_auth(request)
+    response.headers["Cache-Control"] = "no-store"
+    return {
+        **get_runtime_config().snapshot(),
+        "model_routes_configured": bool(os.environ.get("MODEL_ROUTES", "").strip()),
+    }
+
+
+@router.put("/runtime-config")
+async def update_runtime_config(
+    req: RuntimeConfigUpdateRequest,
+    request: Request,
+    response: Response,
+):
+    _check_auth(request)
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        model_name = get_runtime_config().set_model_name(req.model_name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"无法保存运行时配置：{e}")
+    log.info("runtime_model_name_updated", extra={"model_name": model_name})
+    return {
+        **get_runtime_config().snapshot(),
+        "model_routes_configured": bool(os.environ.get("MODEL_ROUTES", "").strip()),
+    }
+
+
+@router.get("/proxies")
+async def list_proxies(request: Request):
+    _check_auth(request)
+    bound = _proxy_account_map()
+    entries = [
+        entry.public_dict(bound.get(entry.id, []))
+        for entry in get_proxy_pool().list_entries()
+    ]
+    return {
+        "proxies": entries,
+        "total": len(entries),
+        "available": sum(1 for entry in entries if entry["enabled"]),
+    }
+
+
+@router.post("/proxies")
+async def add_proxy(req: ProxyAddRequest, request: Request):
+    _check_auth(request)
+    try:
+        entry = get_proxy_pool().add(
+            label=req.label or "",
+            url=req.url,
+            enabled=req.enabled,
+        )
+    except Exception as e:
+        _proxy_error(e)
+    return {"ok": True, "proxy": entry.public_dict()}
+
+
+@router.put("/proxies/{proxy_id}")
+async def update_proxy(proxy_id: str, req: ProxyUpdateRequest, request: Request):
+    _check_auth(request)
+    try:
+        entry = get_proxy_pool().update(
+            proxy_id,
+            label=req.label,
+            url=req.url,
+            enabled=req.enabled,
+        )
+    except Exception as e:
+        _proxy_error(e)
+    get_pool().invalidate_proxy(proxy_id)
+    bound = _proxy_account_map().get(proxy_id, [])
+    return {"ok": True, "proxy": entry.public_dict(bound)}
+
+
+@router.delete("/proxies/{proxy_id}")
+async def remove_proxy(proxy_id: str, request: Request):
+    _check_auth(request)
+    if get_pool().proxy_is_bound(proxy_id):
+        raise HTTPException(status_code=409, detail="代理仍绑定账号，请先解除绑定")
+    try:
+        removed = get_proxy_pool().remove(proxy_id)
+    except Exception as e:
+        _proxy_error(e)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Proxy not found")
+    return {"ok": True}
+
+
+@router.post("/proxies/{proxy_id}/test")
+def test_proxy(proxy_id: str, request: Request):
+    _check_auth(request)
+    try:
+        result = get_proxy_pool().test(proxy_id)
+        entry = get_proxy_pool().get_by_id(proxy_id)
+    except Exception as e:
+        _proxy_error(e)
+    bound = _proxy_account_map().get(proxy_id, [])
+    return {
+        **result,
+        "proxy": entry.public_dict(bound) if entry else None,
+    }
 
 
 @router.get("/stats")
@@ -346,6 +493,8 @@ async def env_info(request: Request):
 
     admin_pwd = os.environ.get("DEEPSEEK_ADMIN_PASSWORD", "admin")
     crypto_on = crypto_is_enabled()
+    runtime = get_runtime_config()
+    runtime_snapshot = runtime.snapshot()
     origins = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "").split(",") if o.strip()]
     trusted = [p.strip() for p in os.environ.get("TRUSTED_PROXIES", "").split(",") if p.strip()]
 
@@ -365,6 +514,9 @@ async def env_info(request: Request):
             "allow_credentials": os.environ.get("ALLOW_CORS_CREDENTIALS", "false").lower() in {"1", "true", "yes", "on"},
         },
         "trusted_proxies": trusted,
+        "proxies_total": len(get_proxy_pool().list_entries()),
+        "model_name": runtime_snapshot["model_name"],
+        "model_name_source": runtime_snapshot["source"],
         "model_routes_configured": bool(os.environ.get("MODEL_ROUTES", "").strip()),
         "rate_limit": {
             "enabled": os.environ.get("ENABLE_RATE_LIMIT", "true").lower() in {"1", "true", "yes", "on"},
@@ -385,10 +537,17 @@ async def env_info(request: Request):
             {"name": "MODE", "value": _env("MODE") or "auto", "is_default": _flag("MODE") == "default"},
             {"name": "THINKING", "value": _env("THINKING") or "auto", "is_default": _flag("THINKING") == "default"},
             {"name": "SEARCH", "value": _env("SEARCH") or "auto", "is_default": _flag("SEARCH") == "default"},
-            {"name": "MODEL_NAME", "value": _env("MODEL_NAME") or "deepseek-chat", "is_default": _flag("MODEL_NAME") == "default"},
+            {
+                "name": "MODEL_NAME",
+                "value": runtime_snapshot["model_name"],
+                "is_default": runtime_snapshot["source"] == "default",
+                "source": runtime_snapshot["source"],
+            },
             {"name": "MODEL_ROUTES", "value": _env("MODEL_ROUTES") or "", "is_default": _flag("MODEL_ROUTES") == "default"},
             {"name": "DEEPSEEK_ADMIN_PASSWORD", "value": "***" if admin_pwd else "", "is_default": _flag("DEEPSEEK_ADMIN_PASSWORD") == "default"},
             {"name": "DEEPSEEK_ENCRYPTION_KEY", "value": "***" if crypto_on else "", "is_default": _flag("DEEPSEEK_ENCRYPTION_KEY") == "default"},
+            {"name": "PROXY_STORE_PATH", "value": _env("PROXY_STORE_PATH") or "data/proxies.json", "is_default": _flag("PROXY_STORE_PATH") == "default"},
+            {"name": "PROXY_CHECK_URL", "value": _env("PROXY_CHECK_URL") or "https://chat.deepseek.com/", "is_default": _flag("PROXY_CHECK_URL") == "default"},
             {"name": "ALLOWED_ORIGINS", "value": _env("ALLOWED_ORIGINS") or "", "is_default": _flag("ALLOWED_ORIGINS") == "default"},
             {"name": "TRUSTED_PROXIES", "value": _env("TRUSTED_PROXIES") or "", "is_default": _flag("TRUSTED_PROXIES") == "default"},
             {"name": "ENABLE_RATE_LIMIT", "value": _env("ENABLE_RATE_LIMIT") or "true", "is_default": _flag("ENABLE_RATE_LIMIT") == "default"},
@@ -420,7 +579,12 @@ async def add_account(req: AccountAddRequest, request: Request):
     _check_auth(request)
     pool = get_pool()
     try:
-        acct = pool.add(token=req.token, cookies=req.cookies, email=req.email or "")
+        acct = pool.add(
+            token=req.token,
+            cookies=req.cookies,
+            email=req.email or "",
+            proxy_id=req.proxy_id or "",
+        )
     except Exception as e:
         _pool_error(e)
     return {"ok": True, "account": acct.to_dict()}
@@ -431,7 +595,13 @@ async def update_account(account_id: str, req: AccountUpdateRequest, request: Re
     _check_auth(request)
     pool = get_pool()
     try:
-        acct = pool.update(account_id, token=req.token, cookies=req.cookies, email=req.email)
+        acct = pool.update(
+            account_id,
+            token=req.token,
+            cookies=req.cookies,
+            email=req.email,
+            proxy_id=req.proxy_id,
+        )
     except Exception as e:
         _pool_error(e)
     return {"ok": True, "account": acct.to_dict()}

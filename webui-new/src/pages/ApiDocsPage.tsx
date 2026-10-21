@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import {
   BookOpen,
   Braces,
@@ -20,11 +21,14 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { get } from '@/lib/api'
+import type { RuntimeConfigResponse } from '@/lib/types'
 
 const ORIGIN = window.location.origin
 const API_BASE = `${ORIGIN}/v1`
 
-const OPENAI_PYTHON = `from openai import OpenAI
+function openAiPython(modelName: string) {
+  return `from openai import OpenAI
 
 client = OpenAI(
     api_key="YOUR_API_KEY",
@@ -32,7 +36,7 @@ client = OpenAI(
 )
 
 response = client.chat.completions.create(
-    model="deepseek-chat",
+    model="${modelName}",
     messages=[
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "你好，介绍一下你自己"},
@@ -40,20 +44,24 @@ response = client.chat.completions.create(
 )
 
 print(response.choices[0].message.content)`
+}
 
-const OPENAI_STREAM = `curl -N "${ORIGIN}/v1/chat/completions" \\
+function openAiStream(modelName: string) {
+  return `curl -N "${ORIGIN}/v1/chat/completions" \\
   -H "Authorization: Bearer YOUR_API_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "model": "deepseek-chat",
+    "model": "${modelName}",
     "messages": [{"role": "user", "content": "hello"}],
     "stream": true,
     "thinking_mode": false,
     "search_enabled": false
   }'`
+}
 
-const OPENAI_REQUEST = `{
-  "model": "deepseek-chat",
+function openAiRequest(modelName: string) {
+  return `{
+  "model": "${modelName}",
   "messages": [
     {"role": "system", "content": "You are a helpful assistant."},
     {"role": "user", "content": "你好"}
@@ -62,8 +70,10 @@ const OPENAI_REQUEST = `{
   "thinking_mode": false,
   "search_enabled": false
 }`
+}
 
-const ANTHROPIC_PYTHON = `from anthropic import Anthropic
+function anthropicPython(modelName: string) {
+  return `from anthropic import Anthropic
 
 client = Anthropic(
     api_key="YOUR_API_KEY",
@@ -71,7 +81,7 @@ client = Anthropic(
 )
 
 response = client.messages.create(
-    model="deepseek-chat",
+    model="${modelName}",
     max_tokens=1024,
     messages=[
         {"role": "user", "content": "你好，介绍一下你自己"},
@@ -79,17 +89,20 @@ response = client.messages.create(
 )
 
 print(response.content)`
+}
 
-const ANTHROPIC_CURL = `curl -N "${ORIGIN}/v1/messages" \\
+function anthropicCurl(modelName: string) {
+  return `curl -N "${ORIGIN}/v1/messages" \\
   -H "x-api-key: YOUR_API_KEY" \\
   -H "anthropic-version: 2023-06-01" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "model": "deepseek-chat",
+    "model": "${modelName}",
     "max_tokens": 1024,
     "messages": [{"role": "user", "content": "hello"}],
     "stream": true
   }'`
+}
 
 function MethodPath({ method, path }: { method: 'GET' | 'POST'; path: string }) {
   return (
@@ -132,6 +145,22 @@ function ErrorRow({
 }
 
 export default function ApiDocsPage() {
+  const [modelName, setModelName] = useState('deepseek-chat')
+
+  useEffect(() => {
+    let cancelled = false
+    get<RuntimeConfigResponse>('/admin/api/runtime-config')
+      .then((config) => {
+        if (!cancelled) setModelName(config.model_name)
+      })
+      .catch(() => {
+        // Keep the documented default if runtime config cannot be loaded.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   return (
     <div className="space-y-4 animate-fade-in">
       <PageHeader
@@ -176,7 +205,7 @@ export default function ApiDocsPage() {
                     推荐模型名
                   </div>
                   <code className="font-mono text-[11px] text-muted-foreground">
-                    deepseek-chat
+                    {modelName}
                   </code>
                 </div>
               </div>
@@ -211,7 +240,7 @@ export default function ApiDocsPage() {
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3">
-                  <CodeBlock code={OPENAI_PYTHON} title="Python" language="python" />
+                  <CodeBlock code={openAiPython(modelName)} title="Python" language="python" />
                   <CodeBlock
                     code=".\.venv\Scripts\python.exe -m pip install openai"
                     title="安装 SDK（项目虚拟环境）"
@@ -228,7 +257,7 @@ export default function ApiDocsPage() {
                   <FieldRow name="接口类型" description="OpenAI Compatible / OpenAI 兼容" />
                   <FieldRow name="Base URL" description={API_BASE} />
                   <FieldRow name="API Key" description="WebUI 设置页生成的客户端 API Key" />
-                  <FieldRow name="模型" description="deepseek-chat" />
+                  <FieldRow name="模型" description={modelName} />
                 </CardContent>
               </Card>
             </TabsContent>
@@ -241,9 +270,9 @@ export default function ApiDocsPage() {
                 </CardHeader>
                 <CardContent className="space-y-3">
                   <MethodPath method="POST" path="/v1/chat/completions" />
-                  <CodeBlock code={OPENAI_REQUEST} title="请求体" language="json" />
+                  <CodeBlock code={openAiRequest(modelName)} title="请求体" language="json" />
                   <div>
-                    <FieldRow name="model" description="推荐固定为 deepseek-chat；旧模型名仅作为别名。" />
+                    <FieldRow name="model" description={`当前公开模型名为 ${modelName}；可在「设置」中修改。`} />
                     <FieldRow name="messages" description="OpenAI 消息数组，支持 system/user/assistant/tool。" />
                     <FieldRow name="stream" description="true 返回 SSE；false 返回完整 JSON。" />
                     <FieldRow name="thinking_mode" description="true 请求推理内容，是否生效仍受服务端 THINKING 配置影响。" />
@@ -259,7 +288,7 @@ export default function ApiDocsPage() {
                   <CardDescription>使用 -N 关闭客户端缓冲，实时查看 SSE。</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <CodeBlock code={OPENAI_STREAM} title="PowerShell / curl.exe" language="bash" />
+                  <CodeBlock code={openAiStream(modelName)} title="PowerShell / curl.exe" language="bash" />
                 </CardContent>
               </Card>
 
@@ -295,7 +324,7 @@ export default function ApiDocsPage() {
                     <FieldRow name="Base URL" description={ORIGIN} />
                     <FieldRow name="认证头" description="x-api-key: YOUR_API_KEY；也接受 Authorization: Bearer。" />
                     <FieldRow name="anthropic-version" description="Anthropic SDK 会发送；服务端不依赖其值。" />
-                    <FieldRow name="model / messages / max_tokens" description="使用 Anthropic Messages 格式；模型推荐 deepseek-chat。" />
+                    <FieldRow name="model / messages / max_tokens" description={`使用 Anthropic Messages 格式；当前模型名为 ${modelName}。`} />
                     <FieldRow name="thinking" description='传 {"type":"enabled"} 请求思考内容。' />
                   </div>
                 </CardContent>
@@ -306,8 +335,8 @@ export default function ApiDocsPage() {
                   <CardTitle className="text-base">Anthropic SDK</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3">
-                  <CodeBlock code={ANTHROPIC_PYTHON} title="Python" language="python" />
-                  <CodeBlock code={ANTHROPIC_CURL} title="curl" language="bash" />
+                  <CodeBlock code={anthropicPython(modelName)} title="Python" language="python" />
+                  <CodeBlock code={anthropicCurl(modelName)} title="curl" language="bash" />
                 </CardContent>
               </Card>
             </TabsContent>
@@ -364,7 +393,7 @@ export default function ApiDocsPage() {
         </div>
 
         <div className="min-w-0 xl:self-start">
-          <ApiDebugger />
+          <ApiDebugger defaultModel={modelName} />
         </div>
       </div>
     </div>

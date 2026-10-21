@@ -5,6 +5,7 @@ import LoginPage from '@/pages/LoginPage'
 import DashboardPage from '@/pages/DashboardPage'
 import AccountsPage from '@/pages/AccountsPage'
 import ApiDocsPage from '@/pages/ApiDocsPage'
+import ProxyPoolPage from '@/pages/ProxyPoolPage'
 import PlaygroundPage from '@/pages/PlaygroundPage'
 import SettingsPage from '@/pages/SettingsPage'
 import NotFoundPage from '@/pages/NotFoundPage'
@@ -32,6 +33,7 @@ const router = createBrowserRouter([
           { index: true, element: <DashboardPage /> },
           { path: 'accounts', element: <AccountsPage /> },
           { path: 'accounts/:id', element: <AccountsPage /> },
+          { path: 'proxies', element: <ProxyPoolPage /> },
           { path: 'api-docs', element: <ApiDocsPage /> },
           { path: 'playground', element: <PlaygroundPage /> },
           { path: 'settings', element: <SettingsPage /> },

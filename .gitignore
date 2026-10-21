@@ -7,6 +7,8 @@ venv/
 data/accounts.json
 data/accounts.ci.json
 data/api_keys.sqlite3*
+data/runtime_config.json
+data/proxies.json
 
 # v3 React webui build artefacts (commit source, not built files)
 webui-new/node_modules/

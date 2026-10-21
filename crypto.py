@@ -101,7 +101,7 @@ def encrypt_account_dict(acct: dict[str, Any]) -> dict[str, Any]:
     if not is_enabled():
         return acct
     out = dict(acct)
-    for field in ("token", "cookies"):
+    for field in ("token", "cookies", "proxy"):
         v = out.get(field)
         if isinstance(v, str) and v and not _is_ciphertext(v):
             out[field] = encrypt_str(v)
@@ -113,7 +113,7 @@ def decrypt_account_dict(acct: dict[str, Any]) -> dict[str, Any]:
     if not is_enabled():
         return acct
     out = dict(acct)
-    for field in ("token", "cookies"):
+    for field in ("token", "cookies", "proxy"):
         v = out.get(field)
         if isinstance(v, str) and v and _is_ciphertext(v):
             out[field] = decrypt_str(v)

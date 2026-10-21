@@ -40,6 +40,10 @@ export interface Account {
   token_preview: string
   cookies_preview: string
   credential_fingerprint: string
+  proxy_id: string
+  proxy_label: string
+  proxy_preview: string
+  proxy_enabled: boolean
 }
 
 export interface AccountsResponse {
@@ -87,6 +91,36 @@ export interface ModelInfo {
 export interface ModelsResponse {
   object?: string
   data: ModelInfo[]
+}
+
+export interface RuntimeConfigResponse {
+  model_name: string
+  source: 'webui' | 'env' | 'default' | string
+  persisted: boolean
+  default_model_name: string
+  model_routes_configured: boolean
+}
+
+export interface ProxyConfig {
+  id: string
+  label: string
+  url_preview: string
+  enabled: boolean
+  created_at: number
+  updated_at: number
+  last_check_at: number
+  last_check_ok: boolean | null
+  last_check_status: number | null
+  last_check_latency_ms: number | null
+  last_check_error: string
+  bound_accounts: string[]
+  bound_count: number
+}
+
+export interface ProxiesResponse {
+  proxies: ProxyConfig[]
+  total: number
+  available: number
 }
 
 export interface ChatMessage {

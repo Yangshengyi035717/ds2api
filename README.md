@@ -83,8 +83,9 @@ DEEPSEEK_ADMIN_PASSWORD=change-me
 
 # DeepSeek 账号只通过 WebUI「账号池」或 data/accounts.json 配置。
 
-# 可选：API 中暴露的模型名称。本代理只服务一个模型，
-# 「思考 / 不思考」由下面的 THINKING 决定，不是两个模型。
+# 公开模型名称优先在 WebUI「设置 → 模型名称」中配置，
+# 保存到 data/runtime_config.json 并立即生效，无需重启。
+# 下面的值仅作为首次启动的默认回退。
 MODEL_NAME=deepseek-chat
 
 # 可选（高级）：模型路由覆盖。默认不配置——不配置时 /v1/models 只列出 MODEL_NAME，
@@ -158,9 +159,10 @@ curl http://localhost:8080/v1/models \
 WebUI 其他功能包括：
 
 - **概览** — 实时请求统计（总量/成功/失败/延迟/运行时长）+ 账号池状态一览
+- **代理池** — 维护 upstream 代理、连通性检测，并按账号绑定稳定出口
 - **API 文档** — OpenAI / Anthropic 接入说明，内置 `/v1/models`、Chat Completions、Messages 在线调试器
 - **Playground** — 在线测试对话（单个模型 + 「思考模式」/「联网搜索」两个开关，支持推理过程可视化）
-- **设置** — 只读查看当前生效的运行时配置
+- **设置** — 可视化配置公开模型名称、管理 API Key，并查看当前运行时配置
 
 ---
 
@@ -174,13 +176,13 @@ WebUI 其他功能包括：
 {
   "version": 1,
   "accounts": [
-    {"email": "acc-001", "token": "<token>", "cookies": "<cookies>"},
-    {"email": "acc-002", "token": "<token>", "cookies": "<cookies>"}
+    {"email": "acc-001", "token": "<token>", "cookies": "<cookies>", "proxy_id": "proxy_xxx"},
+    {"email": "acc-002", "token": "<token>", "cookies": "<cookies>", "proxy_id": "proxy_yyy"}
   ]
 }
 ```
 
-- 必填 `token` + `cookies`；可选 `email`/`id`/`created_at`/`updated_at`
+- 必填 `token` + `cookies`；可选 `email`/`id`/`proxy_id`/`created_at`/`updated_at`
 - 文件 `chmod 600`、目录 `chmod 700`（含明文 DeepSeek 凭证，泄露=账号被滥用）
 - 服务启动时一次性全量加载；改文件后需重启进程
 - **加密**：设 `DEEPSEEK_ENCRYPTION_KEY`(Fernet) 后首次启动自动把明文迁移为 v2 加密，并留 `accounts.json.v1.bak`；此时勿再手写明文
@@ -202,6 +204,19 @@ python -m uvicorn server:app --host 127.0.0.1 --port 8080
 ```
 
 - **改存储路径**：`ACCOUNT_STORE_PATH` 环境变量。
+
+### 代理池与出口绑定
+
+WebUI「代理池」支持 HTTP / HTTPS / SOCKS4 / SOCKS5 / SOCKS5H 代理：
+
+- 每个代理默认只能绑定一个账号，避免多个账号共用同一出口 IP
+- 账号在「账号池 → 编辑账号」中选择代理，绑定关系持久化到 `data/accounts.json`
+- 代理地址持久化到 `data/proxies.json`；开启 `DEEPSEEK_ENCRYPTION_KEY` 后代理 URL 会与账号凭证一起加密
+- 删除已绑定代理会被拒绝，需先解除账号绑定
+- 代理停用或失效时，绑定账号会报错而不会静默回退为直连
+- 「检测」会通过代理访问 `PROXY_CHECK_URL`（默认 `https://chat.deepseek.com/`）
+
+建议一个账号长期使用一个稳定、地域一致的专用出口，不要按请求轮换代理。
 
 ---
 
@@ -843,6 +858,8 @@ DeepSeek 的 Token 有效期不明确。如果遇到 `401` 或 `403` 响应，�
 | 变量 | 默认值 | 必填 | 说明 |
 |------|--------|------|------|
 | `ACCOUNT_STORE_PATH` | `data/accounts.json` | 否 | 面板持久化账号保存路径 |
+| `PROXY_STORE_PATH` | `data/proxies.json` | 否 | 代理池持久化路径 |
+| `PROXY_CHECK_URL` | `https://chat.deepseek.com/` | 否 | 代理池连通性检测目标 URL |
 
 ### 模型行为
 
@@ -876,7 +893,7 @@ DeepSeek 的 Token 有效期不明确。如果遇到 `401` 或 `403` 响应，�
 | `ALLOWED_ORIGINS` | `""` | CORS 允许的 origin 列表（逗号分隔），空 = 同源 |
 | `ALLOW_CORS_CREDENTIALS` | `false` | 是否允许带 credentials 的跨域（需配合 `ALLOWED_ORIGINS`） |
 | `TRUSTED_PROXIES` | `""` | 信任的代理 IP/CIDR（设置后 `X-Forwarded-For` 才会被采纳） |
-| `DEEPSEEK_ENCRYPTION_KEY` | `""` | Fernet key；设置后 `data/accounts.json` 中的 token/cookies 自动加密 |
+| `DEEPSEEK_ENCRYPTION_KEY` | `""` | Fernet key；设置后账号 token/cookies 与代理池 URL 自动加密 |
 
 ### 日志 & 反检测
 

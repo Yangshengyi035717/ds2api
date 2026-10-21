@@ -83,8 +83,9 @@ DEEPSEEK_ADMIN_PASSWORD=***
 
 # DeepSeek accounts are configured only in WebUI > Account Pool or data/accounts.json.
 
-# Optional: model name exposed in the API. This proxy serves ONE model,
-# and "thinking / not thinking" is decided by THINKING below — not two models.
+# Configure the public model name in WebUI > Settings > Model Name.
+# It is persisted to data/runtime_config.json and applies without a restart.
+# The value below is only the initial fallback.
 MODEL_NAME=deepseek-chat
 
 # Optional (advanced): model routing override. Not configured by default — when unset,
@@ -158,9 +159,10 @@ Accounts are loaded only from `data/accounts.json`. Changes made in the WebUI Ac
 Other WebUI features include:
 
 - **Overview** — live request statistics (total/success/failure/latency/uptime) + account pool status overview.
+- **Proxy Pool** — manage upstream proxies, run connectivity checks, and bind a stable egress to each account.
 - **API Docs** — OpenAI / Anthropic integration guides with an embedded debugger for `/v1/models`, Chat Completions, and Messages.
 - **Playground** — online test chat (thinking/search toggles, supports reasoning process visualization).
-- **Settings** — read-only view of the currently effective runtime configuration.
+- **Settings** — configure the public model name, manage API keys, and view the effective runtime configuration.
 ---
 
 ## Non-interactive Account Pool Configuration (for proxies / automation)
@@ -173,13 +175,13 @@ Other WebUI features include:
 {
   "version": 1,
   "accounts": [
-    {"email": "acc-001", "token": "<token>", "cookies": "<cookies>"},
-    {"email": "acc-002", "token": "<token>", "cookies": "<cookies>"}
+    {"email": "acc-001", "token": "<token>", "cookies": "<cookies>", "proxy_id": "proxy_xxx"},
+    {"email": "acc-002", "token": "<token>", "cookies": "<cookies>", "proxy_id": "proxy_yyy"}
   ]
 }
 ```
 
-- `token` + `cookies` are required; optional `email`/`id`/`created_at`/`updated_at`.
+- `token` + `cookies` are required; optional `email`/`id`/`proxy_id`/`created_at`/`updated_at`.
 - `chmod 600` the file and `chmod 700` its directory (it holds plaintext DeepSeek credentials; leaking them means account abuse).
 - The pool loads the file once at startup; restart the process after editing.
 - **Encryption**: set `DEEPSEEK_ENCRYPTION_KEY` (Fernet); on first startup plaintext is migrated to encrypted v2 automatically, leaving `accounts.json.v1.bak`. Do not hand-write plaintext afterward.
@@ -201,6 +203,18 @@ python -m uvicorn server:app --host 127.0.0.1 --port 8080
 ```
 
 - **Change the store path**: `ACCOUNT_STORE_PATH` environment variable.
+
+### Proxy pool and egress isolation
+
+The WebUI "Proxy Pool" supports HTTP, HTTPS, SOCKS4, SOCKS5, and SOCKS5H:
+
+- One proxy can bind to one account by default, preventing multiple accounts from sharing the same egress IP.
+- Bind a proxy from **Account Pool > Edit Account**; `proxy_id` is persisted in `data/accounts.json`.
+- Proxy URLs are stored in `data/proxies.json` and encrypted at rest when `DEEPSEEK_ENCRYPTION_KEY` is enabled.
+- Deleting a bound proxy is rejected. Disabled or missing proxies fail closed instead of silently falling back to direct access.
+- Connectivity checks use `PROXY_CHECK_URL` (default `https://chat.deepseek.com/`).
+
+Use a stable, geographically consistent dedicated egress per account rather than rotating proxies per request.
 
 ---
 
@@ -845,7 +859,7 @@ Client API keys are managed in WebUI > Settings, and only hashes are stored in S
 
 | Variable | Default | Description |
 |------|--------|------|
-| `MODEL_NAME` | `"deepseek-chat"` | the **single** model name this proxy serves; used by `/v1/models` and API responses |
+| `MODEL_NAME` | `"deepseek-chat"` | initial public model-name fallback; WebUI > Settings writes `data/runtime_config.json`, which takes precedence and applies immediately |
 | `THINKING` | `"auto"` | `auto` / `enabled` / `disabled` — controls `thinking_enabled` (the former expert-mode switch; **this** is what decides whether the model thinks) |
 | `SEARCH` | `"auto"` | `auto` / `enabled` / `disabled` — controls `search_enabled` |
 | `MODEL_ROUTES` | `""` | optional advanced override: a JSON route table mapping a model name to thinking/search capability presets. When set, `/v1/models` lists its keys; when unset only `MODEL_NAME` is listed and legacy names such as `deepseek-reasoner` are still accepted as aliases |
@@ -873,7 +887,7 @@ Client API keys are managed in WebUI > Settings, and only hashes are stored in S
 | `ALLOWED_ORIGINS` | `""` | CORS allowed origin list (comma-separated), empty = same-origin |
 | `ALLOW_CORS_CREDENTIALS` | `false` | whether to allow credentialed cross-origin (needs `ALLOWED_ORIGINS`) |
 | `TRUSTED_PROXIES` | `""` | trusted proxy IP/CIDR (when set, `X-Forwarded-For` is honored) |
-| `DEEPSEEK_ENCRYPTION_KEY` | `""` | Fernet key; when set, token/cookies in `data/accounts.json` are auto-encrypted |
+| `DEEPSEEK_ENCRYPTION_KEY` | `""` | Fernet key; when set, account token/cookies and proxy-pool URLs are auto-encrypted |
 
 ### Logging & anti-detection
 

@@ -28,6 +28,7 @@ from crypto import (
     maybe_upgrade_store_file,
 )
 from logger import get_logger
+from proxy_pool import get_proxy_pool, proxy_preview
 
 load_dotenv()
 
@@ -87,7 +88,8 @@ class Account:
     email: str = ""
     id: str = field(default_factory=_account_id)
     source: str = "file"       # persisted account
-    proxy: str = ""             # per-account upstream proxy (optional)
+    proxy: str = ""             # legacy/manual direct proxy URL (optional)
+    proxy_id: str = ""          # managed proxy-pool binding
     created_at: int = field(default_factory=_now)
     updated_at: int = field(default_factory=_now)
     state: str = "idle"        # idle | busy | error
@@ -99,10 +101,15 @@ class Account:
     @property
     def adapter(self) -> DeepSeekAdapter:
         if self._adapter is None:
+            proxy_url = self.proxy.strip()
+            if not proxy_url and self.proxy_id:
+                proxy_url = get_proxy_pool().resolve_url(self.proxy_id) or ""
+                if not proxy_url:
+                    raise ValueError("绑定的代理不存在或已停用")
             self._adapter = DeepSeekAdapter(
                 token=self.token,
                 cookies=self.cookies,
-                proxy=self.proxy or None,
+                proxy=proxy_url or None,
             )
         return self._adapter
 
@@ -111,6 +118,8 @@ class Account:
         return _credential_fingerprint(self.token, self.cookies)
 
     def to_dict(self) -> dict:
+        proxy_entry = get_proxy_pool().get_by_id(self.proxy_id) if self.proxy_id else None
+        proxy_url = self.proxy.strip() or (proxy_entry.url if proxy_entry else "")
         return {
             "id": self.id,
             "email": self.email,
@@ -124,6 +133,10 @@ class Account:
             "token_preview": _mask_secret(self.token),
             "cookies_preview": _cookie_names(self.cookies),
             "credential_fingerprint": self.fingerprint[:12],
+            "proxy_id": self.proxy_id,
+            "proxy_label": proxy_entry.label if proxy_entry else "",
+            "proxy_preview": proxy_preview(proxy_url) if proxy_url else "",
+            "proxy_enabled": proxy_entry.enabled if proxy_entry else bool(self.proxy),
         }
 
     def to_store_dict(self) -> dict:
@@ -132,6 +145,8 @@ class Account:
             "email": self.email,
             "token": self.token,
             "cookies": self.cookies,
+            "proxy": self.proxy,
+            "proxy_id": self.proxy_id,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -156,6 +171,18 @@ class AccountPool:
         if any(a.fingerprint == acct.fingerprint for a in self._accounts):
             log.warning("skipping_duplicate_account", extra={"email": acct.email, "id": acct.id})
             return
+        if acct.proxy_id:
+            proxy_entry = get_proxy_pool().get_by_id(acct.proxy_id)
+            if proxy_entry is None or not proxy_entry.enabled:
+                acct.state = "error"
+                acct.last_error = "Bound proxy not found or disabled"
+            elif any(a.proxy_id == acct.proxy_id for a in self._accounts):
+                log.warning(
+                    "duplicate_proxy_binding_loaded",
+                    extra={"proxy_id": acct.proxy_id, "account_id": acct.id},
+                )
+                acct.state = "error"
+                acct.last_error = "Proxy already bound to another account"
         self._accounts.append(acct)
 
     def _load_persisted_accounts(self):
@@ -196,6 +223,8 @@ class AccountPool:
                 email=str(item.get("email") or ""),
                 token=token,
                 cookies=cookies,
+                proxy=str(item.get("proxy") or "").strip(),
+                proxy_id=str(item.get("proxy_id") or "").strip(),
                 source="file",
                 created_at=created_at,
                 updated_at=updated_at,
@@ -241,7 +270,13 @@ class AccountPool:
 
     # ── CRUD ───────────────────────────────────────────────────
 
-    def add(self, token: str, cookies: str, email: str = "") -> Account:
+    def add(
+        self,
+        token: str,
+        cookies: str,
+        email: str = "",
+        proxy_id: str = "",
+    ) -> Account:
         token = (token or "").strip()
         cookies = (cookies or "").strip()
         email = (email or "").strip()
@@ -252,6 +287,7 @@ class AccountPool:
             fp = _credential_fingerprint(token, cookies)
             if any(a.fingerprint == fp for a in self._accounts):
                 raise ValueError("Account already exists")
+            proxy_id = self._validate_proxy_binding_locked(proxy_id)
             if not email:
                 email = f"acc-{len(self._accounts) + 1}"
             now = _now()
@@ -261,6 +297,7 @@ class AccountPool:
                 cookies=cookies,
                 email=email,
                 source="file",
+                proxy_id=proxy_id,
                 created_at=now,
                 updated_at=now,
             )
@@ -273,7 +310,8 @@ class AccountPool:
             return next((a for a in self._accounts if a.id == account_id), None)
 
     def update(self, account_id: str, token: str | None = None,
-               cookies: str | None = None, email: str | None = None) -> Account:
+               cookies: str | None = None, email: str | None = None,
+               proxy_id: str | None = None) -> Account:
         with self._lock:
             acct = next((a for a in self._accounts if a.id == account_id), None)
             if acct is None:
@@ -281,6 +319,11 @@ class AccountPool:
             new_token = acct.token if token is None or token == "" else token.strip()
             new_cookies = acct.cookies if cookies is None or cookies == "" else cookies.strip()
             new_email = acct.email if email is None else email.strip()
+            new_proxy_id = (
+                acct.proxy_id
+                if proxy_id is None
+                else self._validate_proxy_binding_locked(proxy_id, ignore_account_id=account_id)
+            )
             if not new_token or not new_cookies:
                 raise ValueError("Token and cookies cannot be empty")
 
@@ -289,17 +332,51 @@ class AccountPool:
                 raise ValueError("Account already exists")
 
             credentials_changed = new_token != acct.token or new_cookies != acct.cookies
+            proxy_changed = new_proxy_id != acct.proxy_id
             acct.token = new_token
             acct.cookies = new_cookies
             acct.email = new_email or acct.email
+            acct.proxy_id = new_proxy_id
             acct.updated_at = _now()
-            if credentials_changed:
+            if credentials_changed or proxy_changed:
                 acct._adapter = None
+            if credentials_changed:
                 acct.state = "idle"
                 acct.error_count = 0
                 acct.last_error = ""
             self._save_persisted_accounts_locked()
             return acct
+
+    def _validate_proxy_binding_locked(
+        self,
+        proxy_id: str,
+        ignore_account_id: str | None = None,
+    ) -> str:
+        value = (proxy_id or "").strip()
+        if not value:
+            return ""
+        entry = get_proxy_pool().get_by_id(value)
+        if entry is None:
+            raise ValueError("绑定的代理不存在")
+        if not entry.enabled:
+            raise ValueError("绑定的代理已停用")
+        if any(a.id != ignore_account_id and a.proxy_id == value for a in self._accounts):
+            raise ValueError("该代理已绑定其他账号")
+        return value
+
+    def invalidate_proxy(self, proxy_id: str) -> int:
+        """Reset cached adapters after a bound proxy changes."""
+        changed = 0
+        with self._lock:
+            for account in self._accounts:
+                if account.proxy_id == proxy_id:
+                    account._adapter = None
+                    changed += 1
+        return changed
+
+    def proxy_is_bound(self, proxy_id: str) -> bool:
+        with self._lock:
+            return any(account.proxy_id == proxy_id for account in self._accounts)
 
     def remove_by_id(self, account_id: str) -> bool:
         with self._lock:
@@ -423,8 +500,7 @@ class AccountPool:
     def check_health(self, acct: Account) -> bool:
         """Test if account credentials are valid by creating a session."""
         try:
-            adapter = DeepSeekAdapter(token=acct.token, cookies=acct.cookies)
-            adapter.create_session()
+            acct.adapter.create_session()
             return True
         except Exception as e:
             with self._lock:

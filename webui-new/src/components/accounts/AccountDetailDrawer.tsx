@@ -56,6 +56,14 @@ export function AccountDetailDrawer({ account, onClose, onRelogin }: Props) {
                 <DetailRow label="标识" value={account.email || '—'} />
                 <DetailRow label="来源" value="data/accounts.json" />
                 <DetailRow label="状态" value={account.state} />
+                <DetailRow
+                  label="出口代理"
+                  value={
+                    account.proxy_id
+                      ? `${account.proxy_label || account.proxy_id} (${account.proxy_preview || '已绑定'})`
+                      : '未绑定（直连）'
+                  }
+                />
               </section>
 
               <Separator />

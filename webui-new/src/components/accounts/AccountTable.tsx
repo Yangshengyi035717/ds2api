@@ -29,6 +29,7 @@ export function AccountTable({ accounts, onEdit, onDelete, onSelect }: Props) {
         <TableRow>
           <TableHead>标识</TableHead>
           <TableHead>来源</TableHead>
+          <TableHead>出口代理</TableHead>
           <TableHead>状态</TableHead>
           <TableHead>Token</TableHead>
           <TableHead>Cookies</TableHead>
@@ -65,6 +66,22 @@ export function AccountTable({ accounts, onEdit, onDelete, onSelect }: Props) {
               </TableCell>
               <TableCell>
                 <Badge variant="secondary">持久化</Badge>
+              </TableCell>
+              <TableCell>
+                {a.proxy_id ? (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="block max-w-[180px] truncate text-xs">
+                        {a.proxy_label || '已绑定代理'}
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <span className="font-mono text-xs">{a.proxy_preview || a.proxy_id}</span>
+                    </TooltipContent>
+                  </Tooltip>
+                ) : (
+                  <span className="text-xs text-warning">直连 / 未绑定</span>
+                )}
               </TableCell>
               <TableCell>
                 <StateBadge state={a.state} />

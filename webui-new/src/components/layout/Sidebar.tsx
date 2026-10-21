@@ -5,6 +5,7 @@ import {
   ChevronsLeft,
   ChevronsRight,
   FlaskConical,
+  Network,
   Settings,
   Users,
 } from 'lucide-react'
@@ -22,6 +23,7 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { to: '/', label: '概览', icon: Activity, end: true },
   { to: '/accounts', label: '账号池', icon: Users },
+  { to: '/proxies', label: '代理池', icon: Network },
   { to: '/api-docs', label: 'API 文档', icon: BookOpenText },
   { to: '/playground', label: 'Playground', icon: FlaskConical },
   { to: '/settings', label: '设置', icon: Settings },

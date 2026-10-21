@@ -36,6 +36,8 @@ _SMOKE_TMP_DIR = tempfile.TemporaryDirectory(prefix="ds2api-smoke-")
 os.environ.setdefault("DEEPSEEK_ADMIN_PASSWORD", "ci-smoke-test-pw")
 os.environ.setdefault("ACCOUNT_STORE_PATH", str(PROJECT_ROOT / "data" / "accounts.ci.json"))
 os.environ["API_KEY_STORE_PATH"] = str(Path(_SMOKE_TMP_DIR.name) / "api_keys.sqlite3")
+os.environ["RUNTIME_CONFIG_PATH"] = str(Path(_SMOKE_TMP_DIR.name) / "runtime_config.json")
+os.environ["PROXY_STORE_PATH"] = str(Path(_SMOKE_TMP_DIR.name) / "proxies.json")
 os.environ["API_KEYS"] = ""
 os.environ["DEEPSEEK_API_KEY"] = ""
 os.environ.setdefault("ALLOW_UNAUTHENTICATED_API", "false")

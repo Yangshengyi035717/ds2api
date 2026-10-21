@@ -1,13 +1,18 @@
 """Unit tests for AccountPool configuration, selection, and persistence."""
 import pytest
 
+import account_pool as account_pool_module
 from account_pool import AccountPool
+from proxy_pool import ProxyPool
 
 
 @pytest.fixture
 def clean_env(monkeypatch, tmp_path):
     """Use an isolated store and clear account-related environment values."""
     monkeypatch.setenv("ACCOUNT_STORE_PATH", str(tmp_path / "accounts.json"))
+    monkeypatch.setenv("PROXY_STORE_PATH", str(tmp_path / "proxies.json"))
+    proxy_pool = ProxyPool(tmp_path / "proxies.json")
+    monkeypatch.setattr(account_pool_module, "get_proxy_pool", lambda: proxy_pool)
     for name in [
         "DEEPSEEK_TOKEN", "DEEPSEEK_COOKIES", "DEEPSEEK_EMAIL", "DEEPSEEK_PROXY",
         "DEEPSEEK_JITTER_SECS", "DEEPSEEK_RATE_LIMIT_RETRY_DELAYS",
