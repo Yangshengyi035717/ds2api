@@ -39,8 +39,17 @@ export default function AccountsPage() {
   const [editing, setEditing] = useState<Account | null>(null)
   const [viewing, setViewing] = useState<Account | null>(null)
   const [deleting, setDeleting] = useState<Account | null>(null)
+  const [providerFilter, setProviderFilter] = useState<'all' | 'deepseek' | 'zai'>('all')
 
-  const accounts = data?.accounts ?? []
+  const allAccounts = data?.accounts ?? []
+  const accounts = providerFilter === 'all'
+    ? allAccounts
+    : allAccounts.filter((account) => account.provider === providerFilter)
+  const providerCounts = {
+    all: allAccounts.length,
+    deepseek: allAccounts.filter((account) => account.provider === 'deepseek').length,
+    zai: allAccounts.filter((account) => account.provider === 'zai').length,
+  }
 
   const handleDelete = async () => {
     if (!deleting) return
@@ -59,7 +68,7 @@ export default function AccountsPage() {
     <div className="space-y-6 animate-fade-in">
       <PageHeader
         title="账号池"
-        description={`管理 DeepSeek 账号 · 共 ${data?.total ?? '—'} 个`}
+        description={`按提供商管理账号 · DeepSeek ${providerCounts.deepseek} · z.ai ${providerCounts.zai}`}
         actions={
           <>
             <Button variant="outline" onClick={refresh} disabled={loading}>
@@ -73,6 +82,17 @@ export default function AccountsPage() {
           </>
         }
       />
+
+      <Tabs
+        value={providerFilter}
+        onValueChange={(value) => setProviderFilter(value as 'all' | 'deepseek' | 'zai')}
+      >
+        <TabsList className="grid w-full grid-cols-3">
+          <TabsTrigger value="all">全部 {providerCounts.all}</TabsTrigger>
+          <TabsTrigger value="deepseek">DeepSeek {providerCounts.deepseek}</TabsTrigger>
+          <TabsTrigger value="zai">z.ai {providerCounts.zai}</TabsTrigger>
+        </TabsList>
+      </Tabs>
 
       <Card>
         <CardContent className="p-0">
@@ -111,16 +131,26 @@ export default function AccountsPage() {
           <DialogHeader>
             <DialogTitle>添加账号</DialogTitle>
             <DialogDescription>
-              推荐从已登录的浏览器导入凭据，也可手动填写 Token 与 Cookies
+              从已登录浏览器导入凭据，或手动填写 Token、Cookies 与账号专属字段
             </DialogDescription>
           </DialogHeader>
           <Tabs defaultValue="import">
-            <TabsList className="grid w-full grid-cols-2">
-              <TabsTrigger value="import">浏览器导入</TabsTrigger>
-              <TabsTrigger value="manual">手动填写</TabsTrigger>
+            <TabsList className="grid w-full grid-cols-3">
+              <TabsTrigger value="import">DeepSeek 导入</TabsTrigger>
+              <TabsTrigger value="zai">z.ai 导入</TabsTrigger>
+              <TabsTrigger value="manual">手动添加</TabsTrigger>
             </TabsList>
             <TabsContent value="import">
               <CredentialImportPanel
+                onImported={() => {
+                  setAddOpen(false)
+                  refresh()
+                }}
+              />
+            </TabsContent>
+            <TabsContent value="zai">
+              <CredentialImportPanel
+                provider="zai"
                 onImported={() => {
                   setAddOpen(false)
                   refresh()

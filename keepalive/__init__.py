@@ -1,1 +1,1 @@
-"""DeepSeek web-session keepalive worker."""
+"""DeepSeek / z.ai web-session keepalive worker."""

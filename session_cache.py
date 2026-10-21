@@ -87,6 +87,7 @@ class ChatSession:
     # Upstream session IDs are account-owned.  An empty value represents a
     # legacy/incomplete in-memory entry and is deliberately never reusable.
     account_id: str = ""
+    provider: str = "deepseek"
     parent_message_id: int = 0
     msg_counters: dict[str, int] | None = None
     # The exact full prompt text that was sent for the last turn of this

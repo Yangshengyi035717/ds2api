@@ -44,6 +44,23 @@ def test_browser_export_rejects_missing_token():
         parse_credential_payload({"cookies": "a=1"})
 
 
+def test_zai_browser_export_preserves_provider_user_id_and_device_id():
+    imported = parse_credential_payload({
+        "provider": "zai",
+        "token": TOKEN,
+        "user_id": "263f39cd-1fd9-4f77-81c6-fe157b22ebdf",
+        "device_id": "uid_0123456789abcdef01234567",
+        "cookies": {"acw_tc": "waf", "token": "stale"},
+    })
+
+    assert imported.provider == "zai"
+    assert imported.user_id == "263f39cd-1fd9-4f77-81c6-fe157b22ebdf"
+    assert imported.device_id == "uid_0123456789abcdef01234567"
+    assert imported.cookies == "acw_tc=waf; token=stale"
+    assert imported.public_summary()["has_user_id"] is True
+    assert imported.public_summary()["user_id_preview"].startswith("263f39c")
+
+
 def test_har_extracts_token_cookies_and_device_id():
     har = {
         "log": {

@@ -1,7 +1,8 @@
-# DeepSeek Session Keepalive (protocol-based)
+# DeepSeek / z.ai Session Keepalive (protocol-based)
 
-Keeps a DeepSeek Chat web session alive **on the server** and pushes refreshed
-cookies back into the DS2API account pool — without a browser.
+Keeps a DeepSeek Chat or z.ai web session alive **on the server** and pushes
+refreshed cookies back into the DS2API account pool — without a browser.
+The worker reads `provider` from the account and selects the matching probe.
 
 ## Why the copied token decays
 
@@ -31,15 +32,19 @@ a 2 GB image for no functional gain.
 ## What it does per cycle
 
 1. Read the account's stored token + cookies from DS2API.
-2. `GET /api/v0/users/current` with those credentials (the cheap probe). A
-   `200` proves the token is alive; curl_cffi merges any refreshed
-   `Set-Cookie` into the jar.
-3. If the jar changed, `PUT /admin/api/accounts/{id}` to persist the new
-   cookie string.
-4. On `40003`, print `SESSION_INVALID` and stop — a dead login needs a human.
+2. Probe with the provider-specific read-only endpoint:
+   - DeepSeek: `GET /api/v0/users/current`
+   - z.ai: `GET /api/v1/chats/?page=1&type=all&channel=zai-web`
+3. A `200` proves the login is alive; curl_cffi merges refreshed WAF/session
+   cookies into the jar.
+4. If the cookie set changed, update the account through
+   `PUT /admin/api/accounts/{id}`.
+5. DeepSeek code `40003` or z.ai HTTP `401/403` means the login is dead:
+   print `SESSION_INVALID` and stop.
 
 It never creates a chat session and never sends a prompt, so it consumes no
-upstream quota and does not look like automation.
+generation quota and does not look like automation. z.ai requests reuse the
+account's bound proxy when one is configured.
 
 ## Layout
 
@@ -74,4 +79,4 @@ docker compose run --rm keepalive python keepalive.py --once
 | `ALIVE` | 0 | token valid, cookies unchanged | none |
 | `REFRESHED` | 0 | token valid, new cookies persisted | none |
 | `TRANSIENT` | 3 | WAF challenge / upstream hiccup | retried next cycle |
-| `SESSION_INVALID` | 2 | login is dead (`40003`) | sign in again, update the account |
+| `SESSION_INVALID` | 2 | login is dead (`40003` / z.ai `401`/`403`) | sign in again, update the account |

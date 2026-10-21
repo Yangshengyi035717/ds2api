@@ -40,18 +40,25 @@ def test_models_expose_sub2api_metadata(compat_client):
     assert response.status_code == 200
     body = response.json()
     assert body["object"] == "list"
-    assert len(body["data"]) == 1
-    model = body["data"][0]
-    assert model["id"] == "deepseek-chat"
-    assert model["owned_by"] == "ds2api"
-    assert model["display_name"] == "DeepSeek Chat"
-    assert model["reasoning"] is True
-    assert model["input_modalities"] == ["text"]
-    assert model["supported_endpoints"] == [
+    assert {model["id"] for model in body["data"]} == {
+        "deepseek-chat",
+        "glm-5.3-flash",
+    }
+    deepseek = next(model for model in body["data"] if model["id"] == "deepseek-chat")
+    zai = next(model for model in body["data"] if model["id"] == "glm-5.3-flash")
+    assert deepseek["owned_by"] == "deepseek"
+    assert deepseek["provider"] == "deepseek"
+    assert deepseek["display_name"] == "DeepSeek Chat"
+    assert deepseek["reasoning"] is True
+    assert deepseek["input_modalities"] == ["text"]
+    assert deepseek["supported_endpoints"] == [
         "/chat/completions",
         "/responses",
         "/messages",
     ]
+    assert zai["owned_by"] == "zai"
+    assert zai["provider"] == "zai"
+    assert zai["display_name"] == "GLM-5.3 Flash"
 
 
 def test_single_model_lookup_and_openai_404(compat_client):
@@ -60,6 +67,10 @@ def test_single_model_lookup_and_openai_404(compat_client):
     found = client.get("/v1/models/deepseek-chat", headers=_auth(key))
     assert found.status_code == 200
     assert found.json()["id"] == "deepseek-chat"
+
+    zai = client.get("/v1/models/glm-5.3-flash", headers=_auth(key))
+    assert zai.status_code == 200
+    assert zai.json()["provider"] == "zai"
 
     missing = client.get("/v1/models/not-a-model", headers=_auth(key))
     assert missing.status_code == 404
@@ -106,6 +117,10 @@ def test_provider_manifest_is_authenticated_and_descriptive(compat_client):
         "responses": True,
         "vision": False,
     }
+    assert {model["provider"] for model in body["models"]} == {
+        "deepseek",
+        "zai",
+    }
     assert body["pricing"]["automatic"] is False
 
 
@@ -126,7 +141,7 @@ def test_streaming_finish_chunk_contains_usage(monkeypatch):
         def prepare_prompt(self, prompt):
             return prompt
 
-        def create_session(self):
+        def create_session(self, *args, **kwargs):
             return "session-test"
 
         def record_message_id(self, *args, **kwargs):
@@ -135,7 +150,11 @@ def test_streaming_finish_chunk_contains_usage(monkeypatch):
         def release(self):
             return None
 
-    monkeypatch.setattr(server, "_acquire", lambda cache_key=None: FakeAcquired())
+    monkeypatch.setattr(
+        server,
+        "_acquire",
+        lambda cache_key=None, provider="deepseek": FakeAcquired(),
+    )
 
     async def collect() -> str:
         response = await server._handle_stream(
@@ -202,6 +221,46 @@ def test_responses_nonstream_translation(compat_client, monkeypatch):
         "output_tokens_details": {"reasoning_tokens": 0},
         "total_tokens": 8,
     }
+
+
+def test_glm_request_routes_to_zai_provider(compat_client, monkeypatch):
+    client, key, _ = compat_client
+    captured = {}
+
+    def fake_nonstream(*args, **kwargs):
+        captured.update(kwargs)
+        return {
+            "id": "chatcmpl-zai",
+            "object": "chat.completion",
+            "model": kwargs["model_name"],
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "z.ai response"},
+                "finish_reason": "stop",
+            }],
+            "usage": {
+                "prompt_tokens": 1,
+                "completion_tokens": 1,
+                "total_tokens": 2,
+            },
+        }
+
+    monkeypatch.setattr(server, "_handle_nonstream", fake_nonstream)
+
+    response = client.post(
+        "/v1/chat/completions",
+        headers=_auth(key),
+        json={
+            "model": "glm-5.3-flash",
+            "messages": [{"role": "user", "content": "hello"}],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["model"] == "glm-5.3-flash"
+    assert captured["provider"] == "zai"
+    assert captured["model_name"] == "glm-5.3-flash"
+    assert captured["upstream_model"] == "x-preview-l"
 
 
 def test_responses_stream_translation(compat_client, monkeypatch):

@@ -631,7 +631,8 @@ class DeepSeekAdapter:
     def chat(self, session_id: str, prompt: str, model_type: str | None = None,
              thinking_enabled: bool = False, search_enabled: bool = False,
              parent_message_id: int | None = None,
-             ready_out: dict | None = None) -> tuple[str, str]:
+             ready_out: dict | None = None,
+             upstream_model: str | None = None) -> tuple[str, str]:
         """Send a non-streaming chat message.
 
         Returns ``(content, thinking)``:
@@ -849,7 +850,8 @@ class DeepSeekAdapter:
                     model_type: str | None = None,
                     thinking_enabled: bool = False, search_enabled: bool = False,
                     parent_message_id: int | None = None,
-                    ready_out: dict | None = None):
+                    ready_out: dict | None = None,
+                    upstream_model: str | None = None):
         """Stream a chat message, yields content tokens.
 
         In expert mode (model_type='expert'), yields dicts with

@@ -15,9 +15,23 @@ interface Props {
   onCancel?: () => void
 }
 
+function zaiUserIdFromToken(token: string): string {
+  try {
+    const payload = token.trim().split('.')[1]
+    if (!payload) return ''
+    const normalized = payload.replace(/-/g, '+').replace(/_/g, '/')
+    const parsed = JSON.parse(atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=')))
+    return typeof parsed.id === 'string' ? parsed.id.trim() : ''
+  } catch {
+    return ''
+  }
+}
+
 export function AccountForm({ account, onSaved, onCancel }: Props) {
   const isEdit = !!account
   const [email, setEmail] = useState(account?.email ?? '')
+  const [provider, setProvider] = useState(account?.provider ?? 'deepseek')
+  const [userId, setUserId] = useState('')
   const [token, setToken] = useState('')
   const [cookies, setCookies] = useState('')
   const [deviceId, setDeviceId] = useState('')
@@ -43,13 +57,23 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
 
   const handleSave = async () => {
     if (busy) return
+    const effectiveUserId = userId.trim() || zaiUserIdFromToken(token)
+    if (provider === 'zai' && !effectiveUserId && !(isEdit && account?.has_user_id)) {
+      toast({ title: 'z.ai 账号需要 User ID', variant: 'destructive' })
+      return
+    }
     setBusy(true)
     try {
       if (isEdit && account) {
-        const body: Record<string, string> = { email, proxy_id: proxyId }
+        const body: Record<string, string> = {
+          email,
+          proxy_id: proxyId,
+          provider,
+        }
         if (token) body.token = token
         if (cookies) body.cookies = cookies
         if (deviceId) body.device_id = deviceId
+        if (effectiveUserId) body.user_id = effectiveUserId
         await put(`/admin/api/accounts/${encodeURIComponent(account.id)}`, body)
         toast({ title: '账号已保存', variant: 'success' })
         // Refetch the account to get the fresh data.
@@ -67,10 +91,14 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
           email: email || '',
           proxy_id: proxyId,
           device_id: deviceId,
+          provider,
+          user_id: effectiveUserId,
         })
         toast({ title: '账号添加成功', variant: 'success' })
         onSaved(res.account)
         setEmail('')
+        setProvider('deepseek')
+        setUserId('')
         setToken('')
         setCookies('')
         setDeviceId('')
@@ -87,6 +115,18 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
   return (
     <div className="space-y-3">
       <div className="space-y-1.5">
+        <Label>账号类型</Label>
+        <Select value={provider} onValueChange={setProvider}>
+          <SelectTrigger>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="deepseek">DeepSeek</SelectItem>
+            <SelectItem value="zai">z.ai</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="space-y-1.5">
         <Label htmlFor="acct-email">标识（邮箱 / 备注）</Label>
         <Input
           id="acct-email"
@@ -96,6 +136,26 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
           autoComplete="off"
         />
       </div>
+      {provider === 'zai' && (
+        <div className="space-y-1.5">
+          <Label htmlFor="acct-user-id">Z.ai User ID</Label>
+          <Input
+            id="acct-user-id"
+            value={userId}
+            onChange={(e) => setUserId(e.target.value)}
+            placeholder={
+              isEdit && account?.user_id_preview
+                ? `留空保持不变（当前 ${account.user_id_preview}）`
+                : '可留空，自动从 token JWT 中提取'
+            }
+            autoComplete="off"
+            className="font-mono text-xs"
+          />
+          <p className="text-[11px] text-muted-foreground">
+            Z.ai 的 X-Signature 签名需要该 User ID；留空时会尝试解析 token JWT。
+          </p>
+        </div>
+      )}
       <div className="space-y-1.5">
         <Label htmlFor="acct-token">Token</Label>
         <Input

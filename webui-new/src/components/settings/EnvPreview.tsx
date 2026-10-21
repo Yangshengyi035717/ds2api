@@ -33,6 +33,8 @@ interface EnvInfoResponse {
   trusted_proxies: string[]
   proxies_total: number
   model_name: string
+  zai_model_name: string
+  zai_upstream_model: string
   model_name_source: string
   model_routes_configured: boolean
   rate_limit: {
@@ -159,6 +161,8 @@ export function EnvPreview() {
         </CardHeader>
         <CardContent className="space-y-1.5 text-sm">
           <Row k="公开模型名" v={info.model_name} />
+          <Row k="Z.ai 模型名" v={info.zai_model_name} />
+          <Row k="Z.ai 上游模型" v={info.zai_upstream_model} />
           <Row
             k="模型名来源"
             v={

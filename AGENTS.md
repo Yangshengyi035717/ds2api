@@ -4,7 +4,9 @@
 
 ## 当前账号配置规则
 
-- WebUI「添加账号」提供两种方式：**浏览器导入**（粘贴 DevTools HAR 或浏览器控制台导出的 `{token,cookies,device_id}`）与**手动填写**。导入接口为 `POST /admin/api/accounts/import`，响应只返回脱敏摘要。
+- WebUI「添加账号」支持 **DeepSeek 浏览器导入**、**z.ai 浏览器导出导入** 与 **手动填写**。导入接口为 `POST /admin/api/accounts/import`，响应只返回脱敏摘要。
+- 账号按 `provider` 分为 `deepseek` / `zai`。DeepSeek 账号至少需要 `token`；z.ai 账号还需要签名所用的 `user_id`，建议同时保存 `device_id` 与 Cookie。
+- z.ai 使用从已登录 `zchat.z.ai` 页面导出的 `{provider:"zai",token,user_id,device_id,cookies}`；`user_id` 由同源 `GET /api/v1/auths/` 获取，`device_id` 来自 `localStorage._arms_uid`。
 - 账号现在持久化可选的 `device_id`（浏览器 `x-device-id`）。HAR / 导出脚本会一并提取；缺失时服务端使用自身持久化的 device id。上游存在 `auth_token/check_device`，但“token 是否硬绑定单一设备”尚未实测证明，设备号主要用于保持请求一致性。
 - DeepSeek 密码登录使用 RSA 加密请求体 + 浏览器 IndexedDB 中**不可导出**的 ES256 私钥签名 MFA challenge，服务端无法仅凭账号密码完成登录。不要在服务端保存 DeepSeek 密码。
 - 浏览器退出登录会轮换/吊销旧 token；退出后必须重新从已登录浏览器导出凭据，服务器端协议保活只能维持登录态、不能代替登录。
@@ -14,6 +16,39 @@
 - 账号凭证只通过 WebUI 账号池或 `data/accounts.json` 配置；WebUI 的修改会持久化到该 JSON 文件。
 - `.env` 中的 `DEEPSEEK_TOKEN`、`DEEPSEEK_COOKIES`、`DEEPSEEK_EMAIL`、`DEEPSEEK_PROXY` 及编号形式不再读取；池空时不会使用环境变量兜底。
 - 以下版本记录保留当时的实现历史；其中曾描述的 `.env` 账号兜底已经移除。
+
+---
+
+## Unreleased（2026-10-21）：z.ai Provider 集成
+
+> 本节描述当前工作区事实，尚未提交为独立版本。
+
+**协议证据**
+
+- z.ai completion 路径为 `POST https://zchat.z.ai/api/v2/chat/completions`。同一请求发到 v1 的 `/api/chat/completions` 会返回 HTTP 404；v2 使用假 token 返回 401，证明路由正确。
+- 每次 completion 前必须先调用 `POST /api/v1/chats/new` 创建服务端 chat；completion 必须复用创建响应中的 chat id，以及请求中生成的 user/assistant message UUID。
+- 请求 query 包含浏览器 fingerprint 字段和 `signature_timestamp`；请求头包含 `Authorization: Bearer <token>`、`X-Signature`、`X-FE-Version`、`X-Region`、`x-device-id`。
+- fingerprint query 必须包含 `requestId`、`user_id`、`version=0.0.1`；设备号只放 `X-Device-ID`，不要放 query。
+- 签名 payload 为 `requestId,<id>,timestamp,<ms>,user_id,<uid>`；`key=HMAC-SHA256(SALT, floor(timestamp/300000))`，最终签名为 `HMAC-SHA256(key, payload|base64(prompt)|timestamp)`。
+- SSE 使用 `{"type":"chat:completion","data":{...}}`；`phase=thinking|answer` 分别映射推理与正文，`phase=done/done=true` 结束。
+- 抓包 body 使用 v2 消息字段，因此 `id`（assistant placeholder）与 `current_user_message_id` 必须是不同 UUID。
+- `glm-5.3-flash` 是公开别名；z.ai 模型列表中显示名 `GLM-5.3-Flash` 的实际 ID 是 `x-preview-l`。
+
+**代码落点**
+
+- `provider_registry.py`：`glm-*` / `ZAI_MODEL_NAME` → `zai`，其余 → `deepseek`；provider 别名不能作为上游模型发送。
+- `zai_adapter.py`：通过 `curl_cffi` 创建服务端 chat、发送 v2 completion，完成签名、fingerprint query、Cookie/token 合并、SSE 分流和代理支持。
+- `account_pool.py`：账号持久化 `provider` / `user_id`；池选择按 provider 隔离；z.ai 缺 `user_id` 拒绝新增/更新，旧数据标记 error。
+- `server.py`：`/v1/models` 同时列出 DeepSeek 与 z.ai；OpenAI Chat、Responses、Anthropic Messages 共用现有格式层，但按 model 选择 provider。z.ai 每轮使用新 chat UUID 并重发完整 prompt，不套用 DeepSeek 的 delta/parent 链。
+- WebUI：账号池提供全部 / DeepSeek / z.ai 分类；新增 z.ai 导入脚本与手动 User ID 输入。
+- `keepalive/`：同一 worker 按账号 `provider` 分流；z.ai 周期探测已验证的 chat-list 只读接口并回写轮换 Cookie，支持账号代理。
+- 测试：`tests/test_zai_provider.py` 覆盖签名向量、v2 路径、SSE thinking/answer、账号隔离与去重。
+
+**边界**
+
+- 尚未接入 z.ai 的 Playwright/noVNC 全自动登录；当前采用已登录浏览器控制台导出，避免服务端保存密码。
+- 没有真实 z.ai 凭据时只能验证到上游鉴权边界（假 token → 401）；真实聊天成功仍需要账号池中的有效 token/Cookie/user_id。
+- `ZAI_MODEL_NAME` 默认 `glm-5.3-flash`；如上游前端版本变化，先复核 `ZAI_COMPLETION_PATH`、`ZAI_FE_VERSION` 与签名逻辑。
 
 ---
 
@@ -216,6 +251,8 @@
 D:\the llaa\DS反代 --pre\
 ├── server.py              # FastAPI 服务入口（路由、请求模型、SSE 组装）
 ├── adapter.py             # DeepSeek API 适配器（PoW、会话、SSE 解析）
+├── zai_adapter.py         # z.ai v2 适配器（签名、浏览器指纹、SSE）
+├── provider_registry.py   # Provider / 模型路由
 ├── anthropic_format.py    # Anthropic /v1/messages 格式转换层
 ├── responses_format.py    # OpenAI Responses 与 Chat Completions 转换层
 ├── account_pool.py        # 多账号池管理（CRUD、状态追踪、轮询分配、健康检查）
@@ -246,9 +283,11 @@ D:\the llaa\DS反代 --pre\
 | `model_router.py` | `MODEL_ROUTES` 解析：model 名 → 能力预设（`model_type` 协议字段 + `thinking`/`search`）；字符串简写=思考开关，dict 形式可显式指定字段；`DEFAULT_MODEL_TYPE="default"`；`ModelRouter(models=[...])` 提供 `/v1/models` 回落名单 | 环境变量优先级决策（在 `server.py`）、HTTP 路由 |
 | `session_cache.py` | 多轮会话缓存：`conv:<sha256>` 键派生、TTL（默认 1800s）、`delta_prompt()` 前缀比对、`ChatSession.diverged_turns` 计数 | HTTP 路由、上游协议 |
 | `adapter.py` | 与 DeepSeek API 通信、PoW 求解、SSE 流解析、会话创建 | HTTP 路由、OpenAI/Anthropic 格式 |
+| `zai_adapter.py` | 与 z.ai v2 completion 通信、HMAC 签名、fingerprint query、SSE thinking/answer 分流 | HTTP 路由、OpenAI/Anthropic 格式 |
+| `provider_registry.py` | `deepseek` / `zai` 常量、模型到 Provider 的归一化、z.ai 模型名解析 | 账号选择、HTTP 路由 |
 | `anthropic_format.py` | Anthropic `/v1/messages` 请求解析、响应组装、SSE 生成 | DeepSeek 协议、HTTP 路由 |
 | `responses_format.py` | OpenAI Responses 输入映射、非流式对象和 SSE 事件转换 | DeepSeek 协议、HTTP 路由 |
-| `account_pool.py` | 多账号 CRUD、状态追踪（idle/busy/error）、轮询分配、健康检查/重登录 | HTTP 路由、DeepSeek 协议 |
+| `account_pool.py` | 多 provider 账号 CRUD、状态追踪（idle/busy/error）、按 provider 轮询、健康检查/重登录 | HTTP 路由、上游协议 |
 | `proxy_pool.py` | 代理池 CRUD、HTTP/SOCKS 代理校验、连通性检测、Fernet 加密持久化 | 账号选择、HTTP 路由 |
 | `runtime_config.py` | 模型名称、显示名称、价格和倍率的线程安全持久化 | HTTP 路由、上游协议 |
 | `admin.py` | 管理后台 API 端点（密码认证、统计查询、账号池 CRUD、重登录触发） | 前端渲染、DeepSeek 协议 |
@@ -2150,6 +2189,7 @@ def check_health(acct) -> bool:
     {
       "id": "acc-001",
       "email": "acc-001",
+      "provider": "deepseek",
       "token": "<DeepSeek Bearer token>",
       "cookies": "cf_clearance=xxx; session=yyy; ...",
       "proxy_id": "proxy_xxx",
@@ -2158,9 +2198,12 @@ def check_health(acct) -> bool:
     },
     {
       "id": "acc-002",
-      "email": "acc-002",
-      "token": "<token2>",
-      "cookies": "<cookies2>",
+      "email": "zai-001",
+      "provider": "zai",
+      "user_id": "<z.ai user id>",
+      "device_id": "uid_...",
+      "token": "<z.ai token>",
+      "cookies": "<z.ai cookies>",
       "proxy_id": "proxy_yyy",
       "created_at": 1781234567,
       "updated_at": 1781234567
@@ -2169,7 +2212,7 @@ def check_health(acct) -> bool:
 }
 ```
 
-- 字段：`id`(可选,默认自动生成)、`email`(显示标识)、`token`、`cookies`(必填两个)、`proxy_id`(可选,绑定代理池条目)、`created_at`/`updated_at`(可选,整数 epoch 秒)。
+- 字段：`id`(可选,默认自动生成)、`email`(显示标识)、`provider`(省略默认 `deepseek`)、`token`、`cookies`、`user_id`(z.ai 必填)、`device_id`(建议)、`proxy_id`(可选,绑定代理池条目)、`created_at`/`updated_at`(可选,整数 epoch 秒)。
 - `version`：`1`(明文) 或 `2`(Fernet 加密)。缺省按明文解析。
 - 该文件**必须** `chmod 600`、所在目录 `700`。含明文 DeepSeek token+cookie，泄露=账号被滥用。
 

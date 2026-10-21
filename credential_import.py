@@ -1,4 +1,4 @@
-"""Import DeepSeek browser credentials from a HAR or a console export.
+"""Import DeepSeek / z.ai browser credentials from a HAR or console export.
 
 DeepSeek's password login is protected by an MFA trusted-device signature.
 The private key is generated as a non-extractable WebCrypto key inside the
@@ -25,7 +25,7 @@ from typing import Any
 
 
 class CredentialImportError(ValueError):
-    """Raised when a payload does not contain usable DeepSeek credentials."""
+    """Raised when a payload does not contain usable upstream credentials."""
 
 
 @dataclass
@@ -33,6 +33,8 @@ class ImportedCredentials:
     token: str
     cookies: str = ""
     device_id: str = ""
+    user_id: str = ""
+    provider: str = ""
     source: str = ""
     warnings: list[str] = field(default_factory=list)
 
@@ -45,6 +47,8 @@ class ImportedCredentials:
             "cookie_names": _cookie_names(self.cookies),
             "has_device_id": bool(self.device_id),
             "device_id_preview": _mask(self.device_id),
+            "has_user_id": bool(self.user_id),
+            "user_id_preview": _mask(self.user_id),
             "warnings": list(self.warnings),
         }
 
@@ -81,7 +85,7 @@ def parse_credential_payload(payload: str | dict | list) -> ImportedCredentials:
 
 
 def normalize_token(raw: Any) -> str:
-    """Return a bare DeepSeek token from a localStorage wrapper/Bearer value."""
+    """Return a bare upstream token from a localStorage wrapper/Bearer value."""
     return _normalize_token(raw)
 
 
@@ -112,6 +116,9 @@ def _looks_like_browser_export(data: dict) -> bool:
             "auth_token",
             "device_id",
             "deviceid",
+            "user_id",
+            "userid",
+            "uid",
             "cookies",
             "cookie",
         }
@@ -134,6 +141,8 @@ def _from_browser_export(data: dict) -> ImportedCredentials:
         _first_value(data, "cookies", "cookie", "cookie_header")
     )
     device_id = _first_string(data, "device_id", "deviceId", "x_device_id")
+    user_id = _first_string(data, "user_id", "userId", "uid")
+    provider = _first_string(data, "provider", "account_type")
     warnings: list[str] = []
     if not cookies:
         warnings.append("未提供 Cookies；服务端会在首次请求时自动获取 WAF Cookie。")
@@ -146,6 +155,8 @@ def _from_browser_export(data: dict) -> ImportedCredentials:
         token=token,
         cookies=cookies,
         device_id=_normalize_device_id(device_id),
+        user_id=_normalize_identifier(user_id),
+        provider=provider,
         source="browser-export",
         warnings=warnings,
     )
@@ -310,6 +321,10 @@ def _valid_token(value: str) -> bool:
 
 
 def _normalize_device_id(value: Any) -> str:
+    return _normalize_identifier(value)
+
+
+def _normalize_identifier(value: Any) -> str:
     if not isinstance(value, str):
         return ""
     value = value.strip()

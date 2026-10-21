@@ -57,9 +57,17 @@ export function AccountTable({ accounts, onEdit, onDelete, onSelect }: Props) {
               <TableCell>
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <span className="block max-w-[160px] truncate font-medium">
-                      {a.email || a.id.slice(0, 10)}
-                    </span>
+                    <div className="max-w-[180px]">
+                      <div className="truncate font-medium">
+                        {a.email || a.id.slice(0, 10)}
+                      </div>
+                      <Badge
+                        variant={a.provider === 'zai' ? 'outline' : 'secondary'}
+                        className="mt-1 text-[10px]"
+                      >
+                        {a.provider_label || a.provider}
+                      </Badge>
+                    </div>
                   </TooltipTrigger>
                   <TooltipContent>{a.id}</TooltipContent>
                 </Tooltip>

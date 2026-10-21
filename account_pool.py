@@ -18,6 +18,13 @@ from typing import Optional
 
 from dotenv import load_dotenv
 from adapter import DeepSeekAdapter
+from zai_adapter import ZaiAdapter, zai_user_id_from_token
+from provider_registry import (
+    PROVIDER_DEEPSEEK,
+    PROVIDER_ZAI,
+    normalize_provider,
+    provider_label,
+)
 from crypto import (
     is_enabled as crypto_is_enabled,
     encrypt_account_dict,
@@ -55,8 +62,22 @@ def _account_id(prefix: str = "acc") -> str:
     return f"{prefix}_{secrets.token_urlsafe(9)}"
 
 
-def _credential_fingerprint(token: str, cookies: str) -> str:
-    return hashlib.sha256(f"{token}\0{cookies}".encode()).hexdigest()
+def _safe_provider(value: str | None) -> str:
+    try:
+        return normalize_provider(value)
+    except ValueError:
+        return PROVIDER_DEEPSEEK
+
+
+def _credential_fingerprint(
+    token: str,
+    cookies: str,
+    provider: str = PROVIDER_DEEPSEEK,
+    user_id: str = "",
+) -> str:
+    return hashlib.sha256(
+        f"{provider}\0{user_id}\0{token}\0{cookies}".encode()
+    ).hexdigest()
 
 
 def _mask_secret(value: str, start: int = 6, end: int = 4) -> str:
@@ -86,6 +107,8 @@ class Account:
     token: str
     cookies: str
     email: str = ""
+    provider: str = PROVIDER_DEEPSEEK
+    user_id: str = ""          # z.ai signature user id
     device_id: str = ""         # browser device that owns the token (optional)
     id: str = field(default_factory=_account_id)
     source: str = "file"       # persisted account
@@ -97,27 +120,41 @@ class Account:
     error_count: int = 0
     last_error: str = ""
     last_used: float = 0.0
-    _adapter: Optional[DeepSeekAdapter] = field(default=None, repr=False)
+    _adapter: Optional[DeepSeekAdapter | ZaiAdapter] = field(default=None, repr=False)
 
     @property
-    def adapter(self) -> DeepSeekAdapter:
+    def adapter(self) -> DeepSeekAdapter | ZaiAdapter:
         if self._adapter is None:
             proxy_url = self.proxy.strip()
             if not proxy_url and self.proxy_id:
                 proxy_url = get_proxy_pool().resolve_url(self.proxy_id) or ""
                 if not proxy_url:
                     raise ValueError("绑定的代理不存在或已停用")
-            self._adapter = DeepSeekAdapter(
-                token=self.token,
-                cookies=self.cookies,
-                proxy=proxy_url or None,
-                device_id=self.device_id,
-            )
+            if self.provider == PROVIDER_ZAI:
+                self._adapter = ZaiAdapter(
+                    token=self.token,
+                    cookies=self.cookies,
+                    proxy=proxy_url or None,
+                    device_id=self.device_id,
+                    user_id=self.user_id,
+                )
+            else:
+                self._adapter = DeepSeekAdapter(
+                    token=self.token,
+                    cookies=self.cookies,
+                    proxy=proxy_url or None,
+                    device_id=self.device_id,
+                )
         return self._adapter
 
     @property
     def fingerprint(self) -> str:
-        return _credential_fingerprint(self.token, self.cookies)
+        return _credential_fingerprint(
+            self.token,
+            self.cookies,
+            self.provider,
+            self.user_id,
+        )
 
     def to_dict(self) -> dict:
         proxy_entry = get_proxy_pool().get_by_id(self.proxy_id) if self.proxy_id else None
@@ -126,6 +163,8 @@ class Account:
             "id": self.id,
             "email": self.email,
             "source": self.source,
+            "provider": self.provider,
+            "provider_label": provider_label(self.provider),
             "state": self.state,
             "error_count": self.error_count,
             "last_error": self.last_error,
@@ -136,6 +175,8 @@ class Account:
             "cookies_preview": _cookie_names(self.cookies),
             "device_id_preview": _mask_secret(self.device_id, 8, 4),
             "has_device_id": bool(self.device_id),
+            "user_id_preview": _mask_secret(self.user_id, 8, 4),
+            "has_user_id": bool(self.user_id),
             "credential_fingerprint": self.fingerprint[:12],
             "proxy_id": self.proxy_id,
             "proxy_label": proxy_entry.label if proxy_entry else "",
@@ -147,6 +188,8 @@ class Account:
         return {
             "id": self.id,
             "email": self.email,
+            "provider": self.provider,
+            "user_id": self.user_id,
             "token": self.token,
             "cookies": self.cookies,
             "device_id": self.device_id,
@@ -176,6 +219,9 @@ class AccountPool:
         if any(a.fingerprint == acct.fingerprint for a in self._accounts):
             log.warning("skipping_duplicate_account", extra={"email": acct.email, "id": acct.id})
             return
+        if acct.provider == PROVIDER_ZAI and not acct.user_id:
+            acct.state = "error"
+            acct.last_error = "z.ai account is missing user_id"
         if acct.proxy_id:
             proxy_entry = get_proxy_pool().get_by_id(acct.proxy_id)
             if proxy_entry is None or not proxy_entry.enabled:
@@ -226,6 +272,8 @@ class AccountPool:
             self._append_loaded(Account(
                 id=str(item.get("id") or _account_id()),
                 email=str(item.get("email") or ""),
+                provider=_safe_provider(item.get("provider")),
+                user_id=str(item.get("user_id") or "").strip(),
                 token=token,
                 cookies=cookies,
                 device_id=str(item.get("device_id") or "").strip(),
@@ -283,16 +331,24 @@ class AccountPool:
         email: str = "",
         proxy_id: str = "",
         device_id: str = "",
+        provider: str = PROVIDER_DEEPSEEK,
+        user_id: str = "",
     ) -> Account:
         token = (token or "").strip()
         cookies = (cookies or "").strip()
         email = (email or "").strip()
         device_id = (device_id or "").strip()
+        provider = normalize_provider(provider)
+        user_id = (user_id or "").strip()
+        if provider == PROVIDER_ZAI and not user_id:
+            user_id = zai_user_id_from_token(token)
         if not token:
             raise ValueError("Token is required")
+        if provider == PROVIDER_ZAI and not user_id:
+            raise ValueError("z.ai 账号需要 User ID")
 
         with self._lock:
-            fp = _credential_fingerprint(token, cookies)
+            fp = _credential_fingerprint(token, cookies, provider, user_id)
             if any(a.fingerprint == fp for a in self._accounts):
                 raise ValueError("Account already exists")
             proxy_id = self._validate_proxy_binding_locked(proxy_id)
@@ -305,6 +361,8 @@ class AccountPool:
                 cookies=cookies,
                 email=email,
                 device_id=device_id,
+                provider=provider,
+                user_id=user_id,
                 source="file",
                 proxy_id=proxy_id,
                 created_at=now,
@@ -318,18 +376,33 @@ class AccountPool:
         with self._lock:
             return next((a for a in self._accounts if a.id == account_id), None)
 
-    def find_by_token(self, token: str) -> Optional[Account]:
+    def find_by_token(
+        self,
+        token: str,
+        provider: str | None = None,
+    ) -> Optional[Account]:
         """Find an account by its bare token (used by credential re-import)."""
         value = (token or "").strip()
         if not value:
             return None
+        wanted = normalize_provider(provider) if provider else None
         with self._lock:
-            return next((a for a in self._accounts if a.token == value), None)
+            return next(
+                (
+                    account
+                    for account in self._accounts
+                    if account.token == value
+                    and (wanted is None or account.provider == wanted)
+                ),
+                None,
+            )
 
     def update(self, account_id: str, token: str | None = None,
                cookies: str | None = None, email: str | None = None,
                proxy_id: str | None = None,
-               device_id: str | None = None) -> Account:
+               device_id: str | None = None,
+               provider: str | None = None,
+               user_id: str | None = None) -> Account:
         with self._lock:
             acct = next((a for a in self._accounts if a.id == account_id), None)
             if acct is None:
@@ -340,6 +413,16 @@ class AccountPool:
             new_device_id = (
                 acct.device_id if device_id is None else device_id.strip()
             )
+            new_provider = (
+                acct.provider
+                if provider is None
+                else normalize_provider(provider)
+            )
+            new_user_id = (
+                acct.user_id if user_id is None else user_id.strip()
+            )
+            if new_provider == PROVIDER_ZAI and not new_user_id:
+                new_user_id = zai_user_id_from_token(new_token)
             new_proxy_id = (
                 acct.proxy_id
                 if proxy_id is None
@@ -347,8 +430,15 @@ class AccountPool:
             )
             if not new_token:
                 raise ValueError("Token cannot be empty")
+            if new_provider == PROVIDER_ZAI and not new_user_id:
+                raise ValueError("z.ai 账号需要 User ID")
 
-            new_fp = _credential_fingerprint(new_token, new_cookies)
+            new_fp = _credential_fingerprint(
+                new_token,
+                new_cookies,
+                new_provider,
+                new_user_id,
+            )
             if any(a.id != account_id and a.fingerprint == new_fp for a in self._accounts):
                 raise ValueError("Account already exists")
 
@@ -356,12 +446,16 @@ class AccountPool:
                 new_token != acct.token
                 or new_cookies != acct.cookies
                 or new_device_id != acct.device_id
+                or new_provider != acct.provider
+                or new_user_id != acct.user_id
             )
             proxy_changed = new_proxy_id != acct.proxy_id
             acct.token = new_token
             acct.cookies = new_cookies
             acct.email = new_email or acct.email
             acct.device_id = new_device_id
+            acct.provider = new_provider
+            acct.user_id = new_user_id
             acct.proxy_id = new_proxy_id
             acct.updated_at = _now()
             if credentials_changed or proxy_changed:
@@ -424,21 +518,32 @@ class AccountPool:
             account_id = self._accounts[index].id
         return self.remove_by_id(account_id)
 
-    def get_all(self) -> list[dict]:
+    def get_all(self, provider: str | None = None) -> list[dict]:
+        wanted = normalize_provider(provider) if provider else None
         with self._lock:
-            return [a.to_dict() for a in self._accounts]
+            return [
+                account.to_dict()
+                for account in self._accounts
+                if wanted is None or account.provider == wanted
+            ]
 
-    def count(self) -> int:
+    def count(self, provider: str | None = None) -> int:
+        wanted = normalize_provider(provider) if provider else None
         with self._lock:
-            return len(self._accounts)
+            return sum(
+                1
+                for account in self._accounts
+                if wanted is None or account.provider == wanted
+            )
 
     # ── Selection ──────────────────────────────────────────────
 
-    def acquire(self) -> Optional[Account]:
+    def acquire(self, provider: str | None = None) -> Optional[Account]:
         """Get the next idle account (round-robin), or None if all busy.
 
         Returns None when no configured account is idle.
         """
+        wanted = normalize_provider(provider) if provider else None
         with self._lock:
             if not self._accounts:
                 return None
@@ -447,13 +552,19 @@ class AccountPool:
                 idx = self._next_idx % n
                 self._next_idx += 1
                 acct = self._accounts[idx]
-                if acct.state == "idle":
+                if acct.state == "idle" and (
+                    wanted is None or acct.provider == wanted
+                ):
                     acct.state = "busy"
                     acct.last_used = time.time()
                     return acct
             return None
 
-    def acquire_by_id(self, account_id: str) -> Optional[Account]:
+    def acquire_by_id(
+        self,
+        account_id: str,
+        provider: str | None = None,
+    ) -> Optional[Account]:
         """Acquire one specific idle account.
 
         Used for cached upstream conversations: a DeepSeek chat session is
@@ -462,10 +573,15 @@ class AccountPool:
         """
         if not account_id:
             return None
+        wanted = normalize_provider(provider) if provider else None
         with self._lock:
             candidates = self._accounts
             for acct in candidates:
-                if acct.id == account_id and acct.state == "idle":
+                if (
+                    acct.id == account_id
+                    and acct.state == "idle"
+                    and (wanted is None or acct.provider == wanted)
+                ):
                     acct.state = "busy"
                     acct.last_used = time.time()
                     return acct
@@ -524,9 +640,13 @@ class AccountPool:
     # ── Health check / relogin ─────────────────────────────────
 
     def check_health(self, acct: Account) -> bool:
-        """Test if account credentials are valid by creating a session."""
+        """Test whether the account credentials still work."""
         try:
-            acct.adapter.create_session()
+            adapter = acct.adapter
+            if hasattr(adapter, "check_health"):
+                adapter.check_health()
+            else:
+                adapter.create_session()
             return True
         except Exception as e:
             with self._lock:

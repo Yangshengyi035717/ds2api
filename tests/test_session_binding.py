@@ -80,11 +80,11 @@ def test_acquire_prefers_the_account_bound_to_cached_session(monkeypatch):
             self.preferred = None
             self.released = None
 
-        def acquire_by_id(self, account_id):
+        def acquire_by_id(self, account_id, provider=None):
             self.preferred = account_id
             return _Account(account_id)
 
-        def acquire(self):
+        def acquire(self, provider=None):
             raise AssertionError("should not round-robin a cached conversation")
 
         def release(self, account):
@@ -103,3 +103,30 @@ def test_acquire_prefers_the_account_bound_to_cached_session(monkeypatch):
     finally:
         acquired.release()
     assert pool.released == "account-a"
+
+
+def test_acquire_forwards_provider_to_pool(monkeypatch):
+    class _Pool:
+        def __init__(self):
+            self.provider = None
+
+        def acquire_by_id(self, account_id, provider=None):
+            raise AssertionError("no cached account expected")
+
+        def acquire(self, provider=None):
+            self.provider = provider
+            return _Account("zai-account")
+
+        def release(self, account):
+            return None
+
+    pool = _Pool()
+    monkeypatch.setattr(server, "SESSION_CACHE", SessionCache(ttl=60))
+    monkeypatch.setattr(server, "pool", pool)
+
+    acquired = server._acquire(provider="zai")
+    try:
+        assert pool.provider == "zai"
+        assert acquired.acct.id == "zai-account"
+    finally:
+        acquired.release()

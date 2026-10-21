@@ -31,6 +31,8 @@ export interface Account {
   id: string
   email: string
   source: string
+  provider: 'deepseek' | 'zai' | string
+  provider_label: string
   state: 'idle' | 'busy' | 'error' | string
   error_count: number
   last_error: string
@@ -41,6 +43,8 @@ export interface Account {
   cookies_preview: string
   device_id_preview: string
   has_device_id: boolean
+  user_id_preview: string
+  has_user_id: boolean
   credential_fingerprint: string
   proxy_id: string
   proxy_label: string
@@ -90,6 +94,8 @@ export interface CredentialImportSummary {
   cookie_names: string[]
   has_device_id: boolean
   device_id_preview: string
+  has_user_id: boolean
+  user_id_preview: string
   warnings: string[]
 }
 

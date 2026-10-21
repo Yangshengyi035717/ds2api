@@ -43,6 +43,16 @@ def test_import_requires_admin_auth(import_client):
     assert response.status_code == 401
 
 
+def test_account_list_rejects_unknown_provider(import_client):
+    client, _, token = import_client
+    response = client.get(
+        "/admin/api/accounts?provider=unknown",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 400
+    assert "不支持的账号类型" in response.json()["detail"]
+
+
 def test_import_creates_account_without_echoing_secrets(import_client):
     client, pool, token = import_client
     headers = {"Authorization": f"Bearer {token}"}
@@ -102,6 +112,65 @@ def test_import_rejects_payload_without_token(import_client):
         json={"payload": {"cookies": "a=1"}},
     )
     assert response.status_code == 400
+
+
+def test_zai_import_uses_exported_provider_and_user_id(import_client):
+    client, pool, token = import_client
+    headers = {"Authorization": f"Bearer {token}"}
+
+    response = client.post(
+        "/admin/api/accounts/import",
+        headers=headers,
+        json={
+            "payload": {
+                "provider": "zai",
+                "token": TOKEN,
+                "user_id": "263f39cd-1fd9-4f77-81c6-fe157b22ebdf",
+                "device_id": "uid_0123456789abcdef01234567",
+                "cookies": {"acw_tc": "waf"},
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["account"]["provider"] == "zai"
+    assert body["account"]["has_user_id"] is True
+    assert body["import"]["has_user_id"] is True
+    stored = pool.find_by_token(TOKEN, provider="zai")
+    assert stored is not None
+    assert stored.user_id == "263f39cd-1fd9-4f77-81c6-fe157b22ebdf"
+
+
+def test_reimport_is_scoped_by_provider(import_client):
+    client, pool, token = import_client
+    headers = {"Authorization": f"Bearer {token}"}
+
+    deepseek = client.post(
+        "/admin/api/accounts/import",
+        headers=headers,
+        json={
+            "provider": "deepseek",
+            "payload": {"token": TOKEN, "cookies": "ds_session_id=s1"},
+        },
+    )
+    zai = client.post(
+        "/admin/api/accounts/import",
+        headers=headers,
+        json={
+            "payload": {
+                "provider": "zai",
+                "token": TOKEN,
+                "user_id": "zai-user",
+                "cookies": {"acw_tc": "waf"},
+            }
+        },
+    )
+
+    assert deepseek.json()["action"] == "created"
+    assert zai.json()["action"] == "created"
+    assert pool.count("deepseek") == 1
+    assert pool.count("zai") == 1
 
 
 def test_adapter_receives_stored_device_id(import_client, monkeypatch):

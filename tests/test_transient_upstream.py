@@ -148,13 +148,17 @@ def test_nonstream_transient_maps_to_503_with_retry_after(
         def prepare_prompt(self, prompt):
             return prompt
 
-        def create_session(self):
+        def create_session(self, *args, **kwargs):
             return "sess"
 
         def release(self):
             return None
 
-    monkeypatch.setattr(server, "_acquire", lambda cache_key=None: FakeAcquired())
+    monkeypatch.setattr(
+        server,
+        "_acquire",
+        lambda cache_key=None, provider="deepseek": FakeAcquired(),
+    )
 
     marked: list[str] = []
     monkeypatch.setattr(

@@ -158,6 +158,90 @@ def test_probe_survives_network_error():
     assert "network" in result.message
 
 
+@pytest.mark.parametrize("status, valid", [(200, True), (401, False), (503, False)])
+def test_zai_probe_classifies_http_status(status, valid):
+    class Sess:
+        def get(self, url, headers, timeout):
+            assert url.endswith("channel=zai-web")
+            assert headers["Authorization"] == "Bearer tok"
+            assert "token=tok" in headers["Cookie"]
+            return _response(status, {"detail": "probe"})
+
+    result = keepalive.zai_probe(Sess(), "tok", "acw_tc=waf; token=stale")
+    assert result.valid is valid
+    if status == 200:
+        assert result.code == 0
+    elif status in keepalive.INVALID_HTTP_STATUSES:
+        assert result.code == status
+
+
+def test_zai_cycle_pushes_rotated_cookies(monkeypatch):
+    pushed = []
+    captured = {}
+    monkeypatch.setattr(
+        keepalive,
+        "_read_full_credentials",
+        lambda *a, **k: {
+            "provider": "zai",
+            "token": "tok",
+            "cookies": "acw_tc=old; token=stale",
+            "device_id": "uid_existing",
+            "user_id": "user-1",
+            "proxy_url": "http://127.0.0.1:7890",
+        },
+    )
+    monkeypatch.setattr(
+        keepalive,
+        "zai_probe",
+        lambda *a, **k: keepalive.ProbeResult(200, True, 0, ""),
+    )
+    monkeypatch.setattr(
+        keepalive,
+        "push_account_updates",
+        lambda _u, _t, _i, **updates: pushed.append(updates),
+    )
+
+    class FakeSession:
+        def __init__(self, *args, **kwargs):
+            captured.update(kwargs)
+            self.cookies = SimpleNamespace(
+                jar=_FakeJar([
+                    {"name": "acw_tc", "value": "new"},
+                    {"name": "cdn_sec_tc", "value": "waf"},
+                ])
+            )
+
+    monkeypatch.setattr(keepalive.cffi_requests, "Session", FakeSession)
+
+    assert keepalive.refresh_once("http://x", "adm", "acc", "chrome150") == 0
+    assert captured["proxies"] == {"all": "http://127.0.0.1:7890"}
+    assert pushed == [{
+        "cookies": "acw_tc=new; token=stale; cdn_sec_tc=waf",
+    }]
+
+
+def test_zai_cycle_stops_on_unauthorized(monkeypatch):
+    monkeypatch.setattr(
+        keepalive,
+        "_read_full_credentials",
+        lambda *a, **k: {
+            "provider": "zai",
+            "token": "tok",
+            "cookies": "acw_tc=old",
+            "device_id": "uid_existing",
+            "user_id": "user-1",
+            "proxy_url": "",
+        },
+    )
+    monkeypatch.setattr(
+        keepalive,
+        "zai_probe",
+        lambda *a, **k: keepalive.ProbeResult(401, False, 401, "invalid"),
+    )
+
+    assert keepalive.refresh_once("http://x", "adm", "acc", "chrome150") == 2
+
+
 def _patch_cycle(monkeypatch, *, creds, probe_result, jar_items=None):
     pushed: list[str] = []
     monkeypatch.setattr(

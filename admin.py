@@ -26,6 +26,11 @@ from stats_history import get_history, start_sampler
 from api_key_store import get_api_key_store
 from runtime_config import get_runtime_config
 from proxy_pool import get_proxy_pool
+from provider_registry import (
+    PROVIDER_DEEPSEEK,
+    normalize_provider,
+    zai_upstream_model_name,
+)
 
 log = get_logger("admin")
 
@@ -208,6 +213,8 @@ class AccountAddRequest(BaseModel):
     email: str | None = ""
     proxy_id: str | None = ""
     device_id: str | None = ""
+    provider: str = PROVIDER_DEEPSEEK
+    user_id: str | None = ""
 
 
 class AccountUpdateRequest(BaseModel):
@@ -216,10 +223,14 @@ class AccountUpdateRequest(BaseModel):
     email: str | None = None
     proxy_id: str | None = None
     device_id: str | None = None
+    provider: str | None = None
+    user_id: str | None = None
 
 
 class CredentialImportRequest(BaseModel):
     payload: str | dict | list
+    provider: str | None = None
+    user_id: str | None = ""
 
 
 class BrowserLoginStartRequest(BaseModel):
@@ -606,6 +617,8 @@ async def env_info(request: Request):
         "trusted_proxies": trusted,
         "proxies_total": len(get_proxy_pool().list_entries()),
         "model_name": runtime_snapshot["model_name"],
+        "zai_model_name": os.environ.get("ZAI_MODEL_NAME", "glm-5.3-flash"),
+        "zai_upstream_model": zai_upstream_model_name(),
         "model_name_source": runtime_snapshot["source"],
         "model_routes_configured": bool(os.environ.get("MODEL_ROUTES", "").strip()),
         "rate_limit": {
@@ -634,6 +647,8 @@ async def env_info(request: Request):
                 "source": runtime_snapshot["source"],
             },
             {"name": "MODEL_ROUTES", "value": _env("MODEL_ROUTES") or "", "is_default": _flag("MODEL_ROUTES") == "default"},
+            {"name": "ZAI_MODEL_NAME", "value": _env("ZAI_MODEL_NAME") or "glm-5.3-flash", "is_default": _flag("ZAI_MODEL_NAME") == "default"},
+            {"name": "ZAI_UPSTREAM_MODEL", "value": zai_upstream_model_name(), "is_default": _flag("ZAI_UPSTREAM_MODEL") == "default"},
             {
                 "name": "DEEPSEEK_ADMIN_PASSWORD",
                 "value": "***" if password_state["set"] else "",
@@ -666,12 +681,17 @@ async def env_info(request: Request):
 
 
 @router.get("/accounts")
-async def list_accounts(request: Request):
+async def list_accounts(request: Request, provider: str | None = None):
     _check_auth(request)
     pool = get_pool()
+    try:
+        selected = normalize_provider(provider) if provider else None
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return {
-        "accounts": pool.get_all(),
+        "accounts": pool.get_all(provider=selected),
         **pool.stats(),
+        "provider": selected or "all",
     }
 
 
@@ -689,12 +709,17 @@ async def get_account_credentials(account_id: str, request: Request, response: R
     acct = get_pool().get_by_id(account_id)
     if acct is None:
         raise HTTPException(status_code=404, detail="Account not found")
+    proxy_url = acct.proxy.strip()
+    if not proxy_url and acct.proxy_id:
+        proxy_url = get_proxy_pool().resolve_url(acct.proxy_id) or ""
     return {
         "account": {
             **acct.to_dict(),
             "token": acct.token,
             "cookies": acct.cookies,
             "device_id": acct.device_id,
+            "user_id": acct.user_id,
+            "proxy_url": proxy_url,
         }
     }
 
@@ -710,6 +735,8 @@ async def add_account(req: AccountAddRequest, request: Request):
             email=req.email or "",
             proxy_id=req.proxy_id or "",
             device_id=req.device_id or "",
+            provider=req.provider,
+            user_id=req.user_id or "",
         )
     except Exception as e:
         _pool_error(e)
@@ -731,15 +758,21 @@ async def import_account(req: CredentialImportRequest, request: Request, respons
     except CredentialImportError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    provider = normalize_provider(
+        req.provider or imported.provider or PROVIDER_DEEPSEEK
+    )
+    user_id = (req.user_id or imported.user_id or "").strip()
     pool = get_pool()
     try:
-        existing = pool.find_by_token(imported.token)
+        existing = pool.find_by_token(imported.token, provider=provider)
         if existing is not None:
             acct = pool.update(
                 existing.id,
                 token=imported.token,
                 cookies=imported.cookies or None,
                 device_id=imported.device_id or None,
+                provider=provider,
+                user_id=user_id,
             )
             action = "updated"
         else:
@@ -747,6 +780,8 @@ async def import_account(req: CredentialImportRequest, request: Request, respons
                 token=imported.token,
                 cookies=imported.cookies,
                 device_id=imported.device_id,
+                provider=provider,
+                user_id=user_id,
             )
             action = "created"
     except Exception as e:
@@ -758,6 +793,7 @@ async def import_account(req: CredentialImportRequest, request: Request, respons
             "account_id": acct.id,
             "action": action,
             "source": imported.source,
+            "provider": provider,
             "has_device_id": bool(imported.device_id),
             "cookie_count": len(imported.public_summary()["cookie_names"]),
         },
@@ -878,6 +914,8 @@ async def update_account(account_id: str, req: AccountUpdateRequest, request: Re
             email=req.email,
             proxy_id=req.proxy_id,
             device_id=req.device_id,
+            provider=req.provider,
+            user_id=req.user_id,
         )
     except Exception as e:
         _pool_error(e)

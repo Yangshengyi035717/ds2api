@@ -54,10 +54,15 @@ export function AccountDetailDrawer({ account, onClose, onRelogin }: Props) {
                 <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">身份</h3>
                 <DetailRow label="ID" value={account.id} mono copyable />
                 <DetailRow label="标识" value={account.email || '—'} />
+                <DetailRow label="账号类型" value={account.provider_label || account.provider} />
                 <DetailRow label="来源" value="data/accounts.json" />
                 <DetailRow
                   label="Device ID"
                   value={account.has_device_id ? account.device_id_preview : '未绑定'}
+                />
+                <DetailRow
+                  label="Z.ai User ID"
+                  value={account.has_user_id ? account.user_id_preview : '—'}
                 />
                 <DetailRow label="状态" value={account.state} />
                 <DetailRow

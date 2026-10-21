@@ -24,7 +24,7 @@ class _Acquired:
     def prepare_prompt(self, prompt):
         return prompt
 
-    def create_session(self):
+    def create_session(self, *args, **kwargs):
         return "session"
 
     def chat(self, *args, **kwargs):
@@ -43,7 +43,11 @@ class _Acquired:
 )
 def test_anthropic_nonstream_maps_upstream_errors(monkeypatch, error, status_code):
     acquired = _Acquired(error)
-    monkeypatch.setattr(server, "_acquire", lambda cache_key=None: acquired)
+    monkeypatch.setattr(
+        server,
+        "_acquire",
+        lambda cache_key=None, provider="deepseek": acquired,
+    )
 
     with pytest.raises(HTTPException) as exc_info:
         server._anthropic_nonstream(
@@ -59,7 +63,11 @@ def test_anthropic_nonstream_marks_protocol_hint_as_bad_gateway(monkeypatch):
 
     acquired = _Acquired(UpstreamHintError("upstream hint"))
     marked = []
-    monkeypatch.setattr(server, "_acquire", lambda cache_key=None: acquired)
+    monkeypatch.setattr(
+        server,
+        "_acquire",
+        lambda cache_key=None, provider="deepseek": acquired,
+    )
     monkeypatch.setattr(
         server.pool,
         "mark_error",

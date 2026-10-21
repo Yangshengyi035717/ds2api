@@ -1,6 +1,7 @@
 # DeepSeek Chat API Proxy
 
-> 将 DeepSeek Chat (chat.deepseek.com) 的私有 API 转换为 OpenAI / Anthropic 兼容格式。
+> 将 DeepSeek Chat (chat.deepseek.com) 与 z.ai Web Chat (zchat.z.ai) 的私有 API
+> 转换为统一的 OpenAI / Anthropic 兼容格式。
 
 > **🤖 全 AI 生成声明**: 本项目没有一行人工手写代码。所有的 API 端点设计、协议逆向、PoW 求解、SSE 解析、格式映射、文档编写等等全部由 **DeepSeek v4 Flash 模型** + **Claude Code** 协作完成。
 
@@ -23,6 +24,7 @@
 - **PoW 鉴权** — 自动完成 WASM 工作量证明（DeepSeekHashV1）挑战
 - **会话管理** — 自动创建和管理 DeepSeek Chat 会话；可选多轮会话复用
 - **多账号池** — 轮询分配、idle/busy/error 状态、健康检查、自动恢复
+- **多提供商账号池** — DeepSeek / z.ai 分类管理，按请求模型自动隔离路由
 - **代理池** — 一号一代理、出口绑定、连通性检测与加密存储
 - **Sub2API 上游适配** — 富模型目录、Provider Manifest、价格/倍率配置和同步脚本
 - **客户端限流** — 滑动窗口，按 API key 和 IP 独立计数；响应头 `X-RateLimit-*`
@@ -49,6 +51,37 @@ DeepSeek 的密码登录不是普通 HTTP 表单：登录请求体经 RSA-OAEP �
 
 注意：浏览器退出登录会吊销/轮换旧 token；退出后服务器保存的旧凭据会立即失效，需要重新从已登录浏览器导出。协议保活只能维持现有登录态，不能代替登录。
 
+### 添加 z.ai 账号
+
+在 WebUI → 账号池 → 添加账号 → **z.ai 导入** 中复制导出脚本，然后在已登录的
+`https://zchat.z.ai` 页面 Console 运行。脚本会读取：
+
+```json
+{
+  "provider": "zai",
+  "token": "...",
+  "user_id": "...",
+  "device_id": "uid_...",
+  "cookies": {"acw_tc": "..."}
+}
+```
+
+`user_id` 通过同源接口 `GET /api/v1/auths/` 获取，是 z.ai 请求签名
+`X-Signature` 的必需字段；`device_id` 来自 `localStorage._arms_uid`。
+导入后账号池会显示 `z.ai` 分类，调用模型名 `glm-5.3-flash` 时只选择
+`provider=zai` 的账号，不会与 DeepSeek 账号串用。
+
+当前 z.ai 网页把 `GLM-5.3-Flash` 暴露为公开名称、但 completion API 的
+模型 ID 是 `x-preview-l`。服务端会自动执行：
+
+```text
+公开模型：glm-5.3-flash
+上游模型：x-preview-l
+```
+
+每次 z.ai 请求会先调用 `POST /api/v1/chats/new` 创建服务端会话，再用返回的
+chat/message UUID 发起 `/api/v2/chat/completions`。
+
 ### 服务器浏览器登录（noVNC）
 
 如果不想手动导出，可启用 `browser-login` sidecar。WebUI 的「浏览器登录」
@@ -68,6 +101,18 @@ docker compose up -d --build
 浏览器登录完成后，服务端会直接读取 `localStorage.userToken`、
 `deepseek-device-id:chat` 和 Cookie，并调用内部 ingest 接口写入账号池。
 之后的保活仍由 `keepalive/` 负责。
+
+### 协议保活（DeepSeek / z.ai）
+
+`keepalive/` worker 会从账号详情读取 `provider` 并自动分流：
+
+- DeepSeek：周期调用 `GET /api/v0/users/current`
+- z.ai：周期调用 `GET /api/v1/chats/?page=1&type=all&channel=zai-web`
+
+探活只使用只读接口，不创建 chat、不发送 prompt，因此不消耗生成额度。
+上游轮换的 WAF / session Cookie 会自动执行 `PUT /admin/api/accounts/{id}`
+回写；z.ai 优先使用该账号绑定的代理出口。`401/403`（z.ai）或
+`40003`（DeepSeek）判定为登录失效，并停止等待人工重新导入。
 
 如果服务器机房 IP 被上游 CDN 拦截（页面显示 `403 Request blocked`），
 在 `.env` 设置浏览器出口代理后重启 sidecar：
@@ -135,15 +180,17 @@ DEEPSEEK_ADMIN_PASSWORD=change-me
 # WebUI 修改密码后保存 PBKDF2 verifier；此环境值保留为恢复回退
 ADMIN_PASSWORD_STORE_PATH=data/admin_auth.json
 
-# DeepSeek 账号只通过 WebUI「账号池」或 data/accounts.json 配置。
+# DeepSeek / z.ai 账号只通过 WebUI「账号池」或 data/accounts.json 配置。
 
 # 公开模型名称优先在 WebUI「设置 → 模型名称」中配置，
 # 保存到 data/runtime_config.json 并立即生效，无需重启。
 # 下面的值仅作为首次启动的默认回退。
 MODEL_NAME=deepseek-chat
+# z.ai 默认模型；glm-* 请求会自动选择 provider=zai 账号
+ZAI_MODEL_NAME=glm-5.3-flash
 
-# 可选（高级）：模型路由覆盖。默认不配置——不配置时 /v1/models 只列出 MODEL_NAME，
-# 老的 model 名（deepseek-reasoner 等）作为别名照常接受。
+# 可选（高级）：DeepSeek 能力路由覆盖。默认不配置——/v1/models 会列出
+# 当前 DeepSeek 模型与 z.ai 模型；老的 model 名（deepseek-reasoner 等）作为别名照常接受。
 # MODEL_ROUTES={"my-model":"thinking"}
 
 # 可选：监听地址/端口（默认 127.0.0.1:8080）
@@ -233,14 +280,30 @@ WebUI 其他功能包括：
 {
   "version": 1,
   "accounts": [
-    {"email": "acc-001", "token": "<token>", "cookies": "<cookies>", "proxy_id": "proxy_xxx"},
-    {"email": "acc-002", "token": "<token>", "cookies": "<cookies>", "proxy_id": "proxy_yyy"}
+    {
+      "email": "deepseek-001",
+      "provider": "deepseek",
+      "token": "<token>",
+      "cookies": "<cookies>",
+      "proxy_id": "proxy_xxx"
+    },
+    {
+      "email": "zai-001",
+      "provider": "zai",
+      "user_id": "<z.ai user id>",
+      "device_id": "uid_...",
+      "token": "<token>",
+      "cookies": "<cookies>",
+      "proxy_id": "proxy_yyy"
+    }
   ]
 }
 ```
 
-- 必填 `token` + `cookies`；可选 `email`/`id`/`proxy_id`/`created_at`/`updated_at`
-- 文件 `chmod 600`、目录 `chmod 700`（含明文 DeepSeek 凭证，泄露=账号被滥用）
+- DeepSeek：必填 `token` + `cookies`；`provider` 省略时默认 `deepseek`
+- z.ai：必填 `token` + `user_id`；`provider` 必须为 `zai`，Cookie/Device ID 建议保留
+- 可选 `email`/`id`/`proxy_id`/`created_at`/`updated_at`
+- 文件 `chmod 600`、目录 `chmod 700`（含上游登录凭证，泄露=账号被滥用）
 - 服务启动时一次性全量加载；改文件后需重启进程
 - **加密**：设 `DEEPSEEK_ENCRYPTION_KEY`(Fernet) 后首次启动自动把明文迁移为 v2 加密，并留 `accounts.json.v1.bak`；此时勿再手写明文
 
@@ -249,7 +312,7 @@ WebUI 其他功能包括：
 ```bash
 # 1. 写账号池文件（可脚本生成）
 cat > project_dir/data/accounts.json <<'JSON'
-{"version":1,"accounts":[{"email":"acc-001","token":"<token>","cookies":"<cookies>"}]}
+{"version":1,"accounts":[{"email":"acc-001","provider":"deepseek","token":"<token>","cookies":"<cookies>"}]}
 JSON
 chmod 600 project_dir/data/accounts.json && chmod 700 project_dir/data
 
@@ -362,7 +425,8 @@ OpenAI 兼容的聊天补全接口。
 
 ### 模型与能力发现
 
-- `GET /v1/models`：返回模型 ID、显示名、`owned_by=ds2api`、思考能力、输入模态和支持端点
+- `GET /v1/models`：同时返回 `deepseek-chat` 与 `glm-5.3-flash`，并带
+  `provider=deepseek|zai`、显示名、思考能力、输入模态和支持端点
 - `GET /v1/models/{model}`：单模型查询
 - `GET /v1/provider-manifest`：供 Sub2API 等外部网关同步账号/渠道的模型与协议能力清单
 - `POST /v1/responses` / `POST /responses`：Responses API 兼容入口，支持流式、文本、函数工具和思考开关
@@ -665,7 +729,10 @@ curl http://localhost:8080/v1/chat/completions \
 
 ## 模型路由（v2.2.0；v3.3.8 起为可选的高级覆盖）
 
-**默认不配置。** 本代理只服务一个模型：`/v1/models` 只列出 `MODEL_NAME`（默认 `deepseek-chat`），「思考 / 不思考」由 `THINKING`（或请求里的 `thinking_mode`）决定——**不是两个模型**。由于上游已合并快速/专家模式，model 名也不可能选出不同的上游模型。
+**默认不配置。** DeepSeek 侧只服务一个模型：`MODEL_NAME`（默认
+`deepseek-chat`），「思考 / 不思考」由 `THINKING`（或请求里的
+`thinking_mode`）决定，不是两个 DeepSeek 模型。`/v1/models` 另会列出
+z.ai 的 `glm-5.3-flash`；`glm-*` 请求由 Provider 路由到 z.ai 账号。
 
 写死老名字的客户端（`deepseek-reasoner` 等）不会 404：这些名字经 `model_router.LEGACY_MODEL_ALIASES` 归一到 `deepseek-chat`，照常服务，但**不改变行为**（旧版它们等于「开思考」，现在要思考请设 `THINKING=enabled`）。
 
@@ -803,14 +870,16 @@ Retry-After: 47
 
 | 文件 | 职责 |
 |------|------|
-| `server.py` | FastAPI 服务器，路由分发，MODE/THINKING 控制，OpenAI SSE 格式化 |
+| `server.py` | FastAPI 服务器，Provider 路由，THINKING 控制，OpenAI SSE 格式化 |
 | `adapter.py` | DeepSeek 协议适配器 — PoW 挑战求解，会话创建/管理，原生 SSE 解析，fragment 状态机 |
+| `zai_adapter.py` | z.ai 协议适配器 — v2 completion、HMAC 签名、浏览器指纹 query、SSE 解析 |
+| `provider_registry.py` | Provider 常量、模型到 Provider 的归一化与路由 |
 | `anthropic_format.py` | Anthropic `/v1/messages` 格式转换 — 请求解析、响应组装、SSE 生成 |
 | `tool_sieve.py` | StreamSieve 流式筛分引擎 — 逐字符检测 DSML 工具调用标签，实时分离正文与工具调用 |
 | `tool_dsml.py` | DSML 解析器/生成器 — XML 格式的 DSML ↔ OpenAI tool_calls 双向转换 |
 | `account_pool.py` | 多账号管理 — CRUD、状态追踪（idle/busy/error）、轮询分配、健康检查 |
 | `admin.py` | 管理后台 API — 密码认证、请求统计、账号池增删查改、重登录触发 |
-| `webui/` | 管理面板前端 — 纯静态 SPA，零 build 依赖 |
+| `webui-new/` | React + TypeScript 管理面板（构建后由 `/webui/*` 提供） |
 | `sha3_wasm_bg.wasm` | WASM 二进制，用于 DeepSeekHashV1 工作量证明求解 |
 
 ### 请求生命周期
@@ -832,6 +901,8 @@ Retry-After: 47
 ```
 ├── server.py            # FastAPI 服务器主入口
 ├── adapter.py           # DeepSeek 协议适配器 (PoW, 会话, SSE)
+├── zai_adapter.py       # z.ai 协议适配器 (v2, 签名, 指纹, SSE)
+├── provider_registry.py # Provider / 模型路由
 ├── anthropic_format.py  # Anthropic /v1/messages 格式转换
 ├── responses_format.py  # OpenAI Responses 格式转换
 ├── tool_sieve.py        # StreamSieve 流式工具调用检测引擎
@@ -976,10 +1047,13 @@ DeepSeek 的 Token 有效期不明确。如果遇到 `401` 或 `403` 响应，�
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `MODEL_NAME` | `"deepseek-chat"` | 本代理服务的**唯一**模型名；`/v1/models` 与 API 响应都用它 |
+| `MODEL_NAME` | `"deepseek-chat"` | DeepSeek 公开模型名；WebUI 的运行时模型配置优先于此值 |
+| `ZAI_MODEL_NAME` | `"glm-5.3-flash"` | z.ai 公开模型名；`glm-*` 请求自动路由到 z.ai 账号 |
+| `ZAI_MODEL_DISPLAY_NAME` | `"GLM-5.3 Flash"` | `/v1/models` 中 z.ai 模型的显示名称 |
+| `ZAI_UPSTREAM_MODEL` | `"x-preview-l"` | 公开 `glm-5.3-flash` 对应的 z.ai completion 模型 ID |
 | `THINKING` | `"auto"` | `auto` / `enabled` / `disabled` — 控制 `thinking_enabled`（原「专家模式」开关，**这里**决定思考与否） |
 | `SEARCH` | `"auto"` | `auto` / `enabled` / `disabled` — 控制 `search_enabled` |
-| `MODEL_ROUTES` | `""` | 可选高级覆盖：JSON 路由表，把 model 名映射到 thinking/search 能力预设。配置后 `/v1/models` 列出其键；不配置时只列 `MODEL_NAME`，老的 `deepseek-reasoner` 等作为别名照常接受 |
+| `MODEL_ROUTES` | `""` | 可选高级覆盖：JSON 路由表，把 DeepSeek model 名映射到 thinking/search 能力预设。配置后列出其键；不配置时列出 `MODEL_NAME`。z.ai 模型始终根据 `ZAI_MODEL_NAME` 追加 |
 | `MODE` | `"auto"` | **已废弃**，仅兼容旧配置：`expert` ≡ `THINKING=enabled`，`quick` ≡ `THINKING=disabled` |
 
 ### 管理面板
