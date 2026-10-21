@@ -315,7 +315,8 @@ class AccountPool:
             item = decrypt_account_dict(item) if version == STORE_VERSION_ENCRYPTED else item
             token = str(item.get("token") or "").strip()
             cookies = str(item.get("cookies") or "").strip()
-            if not token:
+            loaded_provider = _safe_provider(item.get("provider"))
+            if not token and loaded_provider != PROVIDER_QWEN:
                 log.warning("skipping_account_missing_credentials", extra={"id": item.get("id")})
                 continue
             created_at = int(item.get("created_at") or _now())
@@ -323,7 +324,7 @@ class AccountPool:
             account_value = Account(
                 id=str(item.get("id") or _account_id()),
                 email=str(item.get("email") or ""),
-                provider=_safe_provider(item.get("provider")),
+                provider=loaded_provider,
                 user_id=str(item.get("user_id") or "").strip(),
                 refresh_token=str(item.get("refresh_token") or "").strip(),
                 xsrf_token=str(item.get("xsrf_token") or "").strip(),
