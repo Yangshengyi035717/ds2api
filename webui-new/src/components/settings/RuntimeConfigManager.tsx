@@ -219,6 +219,16 @@ export function RuntimeConfigManager() {
                 <Label htmlFor="runtime-rate-multiplier">账号倍率</Label>
                 <Input id="runtime-rate-multiplier" type="number" min="0" step="0.000001" value={rateMultiplier} onChange={(event) => setRateMultiplier(event.target.value)} disabled={saving} />
               </div>
+            </div>
+
+            <details className="group rounded-md border">
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-sm font-medium">
+                <span>高级定价</span>
+                <span className="text-[11px] font-normal text-muted-foreground">
+                  输入 / 输出 / 缓存 / 按请求
+                </span>
+              </summary>
+              <div className="grid gap-3 border-t p-3 sm:grid-cols-2">
               <div className="space-y-1.5">
                 <Label htmlFor="runtime-input-price">输入价格 / 百万 Token</Label>
                 <Input id="runtime-input-price" type="number" min="0" step="0.000001" value={inputPrice} onChange={(event) => setInputPrice(event.target.value)} placeholder="留空" disabled={saving} />
@@ -239,7 +249,8 @@ export function RuntimeConfigManager() {
                 <Label htmlFor="runtime-request-price">按请求价格</Label>
                 <Input id="runtime-request-price" type="number" min="0" step="0.000001" value={perRequestPrice} onChange={(event) => setPerRequestPrice(event.target.value)} placeholder="留空" disabled={saving} />
               </div>
-            </div>
+              </div>
+            </details>
 
             <p className="rounded-md border border-dashed p-3 text-[11px] leading-relaxed text-muted-foreground">
               价格用于 <code className="font-mono">/v1/provider-manifest</code> 和 Sub2API 同步脚本。

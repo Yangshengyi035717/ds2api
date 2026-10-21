@@ -194,7 +194,7 @@ export default function ApiDocsPage() {
   }, [])
 
   return (
-    <div className="space-y-4 animate-fade-in">
+    <div className="mx-auto max-w-[1180px] space-y-4 animate-fade-in">
       <PageHeader
         title="API 文档"
         description="OpenAI / Anthropic 兼容接口、客户端接入示例与内嵌在线调试"
@@ -206,8 +206,13 @@ export default function ApiDocsPage() {
         }
       />
 
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(420px,560px)]">
-        <div className="min-w-0 space-y-4">
+      <Tabs defaultValue="docs" className="space-y-4">
+        <TabsList className="grid h-auto w-full grid-cols-2">
+          <TabsTrigger value="docs">接入文档</TabsTrigger>
+          <TabsTrigger value="debug">在线调试</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="docs" className="space-y-4">
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="flex items-center gap-2 text-base">
@@ -490,12 +495,12 @@ export default function ApiDocsPage() {
               </Card>
             </TabsContent>
           </Tabs>
-        </div>
+        </TabsContent>
 
-        <div className="min-w-0 xl:self-start">
+        <TabsContent value="debug" className="space-y-4">
           <ApiDebugger defaultModel={modelName} />
-        </div>
-      </div>
+        </TabsContent>
+      </Tabs>
     </div>
   )
 }

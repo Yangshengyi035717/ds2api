@@ -40,7 +40,12 @@ data/accounts.json
 data/api_keys.sqlite3
 data/runtime_config.json
 data/proxies.json
+data/admin_auth.json
 ```
+
+`data/admin_auth.json` is created when the password is changed in WebUI.
+It contains only a salted PBKDF2-SHA256 verifier; removing it restores the
+`DEEPSEEK_ADMIN_PASSWORD` fallback.
 
 If an encrypted account store is used, the same `DEEPSEEK_ENCRYPTION_KEY` must be present in `.env`.
 

@@ -2240,7 +2240,7 @@ python -m uvicorn server:app --host 127.0.0.1 --port 8080
 
 ### 19.3 认证机制
 
-- 管理密码设置：`DEEPSEEK_ADMIN_PASSWORD` 环境变量（默认 `admin`）
+- 管理密码：初始/恢复值来自 `DEEPSEEK_ADMIN_PASSWORD` 环境变量（默认 `admin`）；WebUI「设置 → 管理员密码」修改后，`data/admin_auth.json` 保存 PBKDF2-SHA256 verifier（非明文，路径可用 `ADMIN_PASSWORD_STORE_PATH` 覆盖），并立即使所有 admin token 失效。删除该文件回退到环境变量。
 - Token 存储：服务端内存 `set`，每次登录生成 64 位 hex token
 - Token 验证：每次请求从 `Authorization: Bearer <token>` 头提取
 - 无过期机制（服务重启后需重新登录）
@@ -2454,7 +2454,7 @@ yield "data: [DONE]\n\n"
 
 - **Token/Cookie 过期**：不定期失效，需重新获取。没有自动续期机制（webui 账号池提供一键重登录）。
 - **账号来源**：仅由 WebUI/Admin API 管理并持久化到 `data/accounts.json`，或直接维护该文件；`.env` 不加载账号凭证。
-- **两套鉴权**：`/v1/*` 客户端用 WebUI「设置」页管理的 API Key（Bearer 或 `x-api-key`，SQLite 仅存哈希）；webui 管理端用 `DEEPSEEK_ADMIN_PASSWORD` 换 admin 会话 token。旧版 `API_KEYS` / `DEEPSEEK_API_KEY` 仅首次创建 Key 数据库时导入。
+- **两套鉴权**：`/v1/*` 客户端用 WebUI「设置」页管理的 API Key（Bearer 或 `x-api-key`，SQLite 仅存哈希）；webui 管理端用 `DEEPSEEK_ADMIN_PASSWORD` 初始密码或 `data/admin_auth.json` 中的 WebUI verifier 换取 admin 会话 token。旧版 `API_KEYS` / `DEEPSEEK_API_KEY` 仅首次创建 Key 数据库时导入。
 - **admin token 放行 `/v1/*`**（v2.2.0+ 行为）：`_check_api_auth` 先验证 `verify_admin_token()`，有效则放行——webui 用同一 token 调模型列表/Playground。持有 admin token 者本已能完全控制账号池，不扩大风险面。
 - **登录节流**：每 IP 5 次失败 / 300s 窗口，超限返回 429；计数为进程内存态，重启清零。
 

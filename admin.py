@@ -1,6 +1,7 @@
 """
 Admin API — authentication, statistics tracking, account pool management.
 """
+import asyncio
 import os
 import secrets
 import threading
@@ -11,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from account_pool import AccountPool
+from admin_password import get_admin_password_store
 import browser_login_client
 from credential_import import (
     CredentialImportError,
@@ -27,12 +29,6 @@ from proxy_pool import get_proxy_pool
 
 log = get_logger("admin")
 
-# ── Admin password (set DEEPSEEK_ADMIN_PASSWORD in .env) ──────
-_ADMIN_PASSWORD = os.environ.get("DEEPSEEK_ADMIN_PASSWORD", "admin")
-# Insecure defaults that we explicitly forbid on a public bind unless
-# the operator sets ALLOW_INSECURE_PUBLIC_DEFAULTS=true.
-_INSECURE_PASSWORDS = {"", "admin", "password", "123456", "changeme"}
-
 # ── Token management ──────────────────────────────────────────
 _tokens: set[str] = set()
 
@@ -42,12 +38,12 @@ def _generate_token() -> str:
 
 
 def is_admin_password_weak() -> bool:
-    """True if the configured admin password is the default or otherwise weak.
+    """True if the effective admin password is a known weak default.
 
     The caller decides what to do with this signal (warn loudly, refuse to
     start on a public bind, etc.). We never refuse on a loopback bind.
     """
-    return (_ADMIN_PASSWORD or "") in _INSECURE_PASSWORDS
+    return get_admin_password_store().is_weak()
 
 
 def _verify_token(token: str) -> bool:
@@ -201,6 +197,11 @@ class LoginResponse(BaseModel):
     token: str
 
 
+class AdminPasswordChangeRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
 class AccountAddRequest(BaseModel):
     token: str
     cookies: str
@@ -310,7 +311,10 @@ async def login(req: LoginRequest, request: Request):
     # same time. Throttle is checked AFTER the compare so a legitimate
     # password resets the counter even if the IP was previously cooling
     # down — typical SSH/GitHub semantics, prevents lockout-of-self.
-    correct = secrets.compare_digest(req.password or "", _ADMIN_PASSWORD or "")
+    correct = await asyncio.to_thread(
+        get_admin_password_store().verify,
+        req.password or "",
+    )
     if correct:
         _login_clear(ip)
         token = _generate_token()
@@ -321,6 +325,54 @@ async def login(req: LoginRequest, request: Request):
     log.warning("admin_login_failed", extra={"ip": ip})
     _login_check_over_limit(ip)
     raise HTTPException(status_code=403, detail="Invalid password")
+
+
+@router.get("/admin-password")
+async def admin_password_status(request: Request, response: Response):
+    _check_auth(request)
+    response.headers["Cache-Control"] = "no-store"
+    return get_admin_password_store().snapshot()
+
+
+@router.put("/admin-password")
+async def change_admin_password(
+    req: AdminPasswordChangeRequest,
+    request: Request,
+    response: Response,
+):
+    """Change the WebUI password and revoke every existing admin session.
+
+    The current password is required even though the caller already holds a
+    valid session token. Revoking every token prevents a stolen session from
+    surviving a password rotation.
+    """
+    _check_auth(request)
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        await asyncio.to_thread(
+            get_admin_password_store().change,
+            req.current_password,
+            req.new_password,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"无法保存管理员密码：{exc}")
+
+    _tokens.clear()
+    with _login_lock:
+        _login_attempts.clear()
+    log.info(
+        "admin_password_changed",
+        extra={"ip": _client_ip(request)},
+    )
+    return {
+        "ok": True,
+        "relogin_required": True,
+        **get_admin_password_store().snapshot(),
+    }
 
 
 @router.post("/logout")
@@ -527,7 +579,7 @@ async def env_info(request: Request):
     def _flag(name: str) -> str:
         return "set" if os.environ.get(name) else "default"
 
-    admin_pwd = os.environ.get("DEEPSEEK_ADMIN_PASSWORD", "admin")
+    password_state = get_admin_password_store().snapshot()
     crypto_on = crypto_is_enabled()
     runtime = get_runtime_config()
     runtime_snapshot = runtime.snapshot()
@@ -538,8 +590,10 @@ async def env_info(request: Request):
         "host": os.environ.get("HOST", "127.0.0.1"),
         "port": int(os.environ.get("PORT", "8080")),
         "insecure_public_defaults": os.environ.get("ALLOW_INSECURE_PUBLIC_DEFAULTS", "false").lower() in {"1", "true", "yes", "on"},
-        "admin_password_set": bool(admin_pwd),
-        "admin_password_weak": admin_pwd in {"", "admin", "password", "123456", "changeme"},
+        "admin_password_set": password_state["set"],
+        "admin_password_weak": password_state["weak"],
+        "admin_password_source": password_state["source"],
+        "admin_password_updated_at": password_state["updated_at"],
         "accounts_total": pool.count(),
         "crypto": {
             "enabled": crypto_on,
@@ -580,7 +634,18 @@ async def env_info(request: Request):
                 "source": runtime_snapshot["source"],
             },
             {"name": "MODEL_ROUTES", "value": _env("MODEL_ROUTES") or "", "is_default": _flag("MODEL_ROUTES") == "default"},
-            {"name": "DEEPSEEK_ADMIN_PASSWORD", "value": "***" if admin_pwd else "", "is_default": _flag("DEEPSEEK_ADMIN_PASSWORD") == "default"},
+            {
+                "name": "DEEPSEEK_ADMIN_PASSWORD",
+                "value": "***" if password_state["set"] else "",
+                "is_default": password_state["source"] == "env"
+                and _flag("DEEPSEEK_ADMIN_PASSWORD") == "default",
+                "source": password_state["source"],
+            },
+            {
+                "name": "ADMIN_PASSWORD_STORE_PATH",
+                "value": _env("ADMIN_PASSWORD_STORE_PATH") or "data/admin_auth.json",
+                "is_default": _flag("ADMIN_PASSWORD_STORE_PATH") == "default",
+            },
             {"name": "DEEPSEEK_ENCRYPTION_KEY", "value": "***" if crypto_on else "", "is_default": _flag("DEEPSEEK_ENCRYPTION_KEY") == "default"},
             {"name": "PROXY_STORE_PATH", "value": _env("PROXY_STORE_PATH") or "data/proxies.json", "is_default": _flag("PROXY_STORE_PATH") == "default"},
             {"name": "PROXY_CHECK_URL", "value": _env("PROXY_CHECK_URL") or "https://chat.deepseek.com/", "is_default": _flag("PROXY_CHECK_URL") == "default"},

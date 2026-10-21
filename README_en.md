@@ -83,6 +83,8 @@ ALLOW_UNAUTHENTICATED_API=false
 
 # Required: WebUI admin panel password (defaults to "admin" if unset; MUST change before public deployment)
 DEEPSEEK_ADMIN_PASSWORD=***
+# WebUI password changes store a PBKDF2 verifier here (env value remains recovery fallback)
+ADMIN_PASSWORD_STORE_PATH=data/admin_auth.json
 
 # DeepSeek accounts are configured only in WebUI > Account Pool or data/accounts.json.
 
@@ -155,7 +157,7 @@ Open in browser: http://localhost:8080/webui/
 
 > start.bat auto-builds the WebUI (source in `webui-new/`, artifacts in `webui-new/dist/`); if deploying manually, first run `npm install && npm run build` inside `webui-new/`.
 
-Default password is `DEEPSEEK_ADMIN_PASSWORD` set in `.env` (defaults to `admin` if unset). Be sure to change the default password before public deployment.
+The initial password is `DEEPSEEK_ADMIN_PASSWORD` from `.env` (defaults to `admin` if unset). After signing in, use **Settings → Administrator Password** to rotate it. The new password is stored only as a PBKDF2-SHA256 verifier in `data/admin_auth.json`, and every admin session is revoked immediately. Delete that file to fall back to the `.env` password.
 
 Accounts are loaded only from `data/accounts.json`. Changes made in the WebUI Account Pool page are saved to this file; you can also maintain the JSON file directly.
 
@@ -165,7 +167,7 @@ Other WebUI features include:
 - **Proxy Pool** — manage upstream proxies, run connectivity checks, and bind a stable egress to each account.
 - **API Docs** — OpenAI / Anthropic integration guides with an embedded debugger for `/v1/models`, Chat Completions, and Messages.
 - **Playground** — online test chat (thinking/search toggles, supports reasoning process visualization).
-- **Settings** — configure the public model name, manage API keys, and view the effective runtime configuration.
+- **Settings** — configure the model/pricing, manage API keys, change the administrator password, and inspect the effective runtime configuration.
 ---
 
 ## Non-interactive Account Pool Configuration (for proxies / automation)
@@ -913,7 +915,8 @@ Client API keys are managed in WebUI > Settings, and only hashes are stored in S
 
 | Variable | Default | Description |
 |------|--------|------|
-| `DEEPSEEK_ADMIN_PASSWORD` | `"admin"` | admin panel login password (must change for public deployment) |
+| `DEEPSEEK_ADMIN_PASSWORD` | `"admin"` | initial/recovery admin password (must change for public deployment) |
+| `ADMIN_PASSWORD_STORE_PATH` | `data/admin_auth.json` | PBKDF2 verifier written after changing the password in the WebUI |
 
 ### Rate limiting & sessions
 

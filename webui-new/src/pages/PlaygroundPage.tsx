@@ -194,9 +194,9 @@ export default function PlaygroundPage() {
         }
       />
 
-      <div className="grid gap-4 lg:grid-cols-[280px,1fr] flex-1 min-h-0">
+      <div className="grid min-h-0 flex-1 gap-4 sm:grid-cols-[220px,minmax(0,1fr)] xl:grid-cols-[280px,minmax(0,1fr)]">
         {/* Left column: request parameters */}
-        <Card className="overflow-y-auto scrollbar-thin">
+        <Card className="self-start overflow-y-auto scrollbar-thin">
           <CardHeader className="pb-2">
             <CardTitle className="text-base flex items-center gap-2">
               <FlaskConical className="h-4 w-4" />
@@ -251,22 +251,23 @@ export default function PlaygroundPage() {
               <Switch id="search" checked={search} onCheckedChange={setSearch} />
             </div>
 
-            <div className="rounded-md border border-dashed p-3 text-[11px] leading-relaxed text-muted-foreground space-y-1">
-              <p className="flex items-center gap-1 font-medium text-foreground/80">
+            <details className="rounded-md border border-dashed">
+              <summary className="flex cursor-pointer list-none items-center gap-1.5 px-3 py-2 text-[11px] font-medium text-foreground/80">
                 <Info className="h-3.5 w-3.5" />
                 参数生效规则
-              </p>
-              <p>· 服务端 .env 的 THINKING / SEARCH 优先级高于此处设置</p>
-              <p>· 只有一个模型，思考与否不靠换模型名，而是这个开关 + THINKING</p>
-              <p>· THINKING/SEARCH 为 enabled/disabled 时强制开关</p>
-              <p>· 旧的 MODE=expert / MODE=quick 仍兼容，等价于 THINKING=enabled / disabled</p>
-              <p>· temperature / top_p / max_tokens 后端暂不生效，未提供</p>
-            </div>
+              </summary>
+              <div className="space-y-1 border-t px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
+                <p>· 服务端 THINKING / SEARCH 优先级高于此处设置</p>
+                <p>· 思考能力由开关和 THINKING 决定，不是换模型名</p>
+                <p>· 旧的 MODE=expert / quick 仍兼容</p>
+                <p>· temperature / top_p / max_tokens 后端暂不生效</p>
+              </div>
+            </details>
           </CardContent>
         </Card>
 
         {/* Right column: conversation */}
-        <Card className="flex flex-col min-h-0">
+        <Card className="flex min-h-[460px] flex-col">
           <CardContent className="flex-1 min-h-0 overflow-y-auto scrollbar-thin p-4">
             <MessageList messages={history} streaming={streaming} />
           </CardContent>

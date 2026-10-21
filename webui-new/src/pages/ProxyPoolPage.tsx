@@ -136,8 +136,8 @@ export default function ProxyPoolPage() {
               <TableHeader>
                 <TableRow>
                   <TableHead>名称</TableHead>
-                  <TableHead>地址</TableHead>
-                  <TableHead>绑定账号</TableHead>
+                  <TableHead className="hidden md:table-cell">地址</TableHead>
+                  <TableHead className="hidden lg:table-cell">绑定账号</TableHead>
                   <TableHead>检测状态</TableHead>
                   <TableHead>启用</TableHead>
                   <TableHead className="text-right">操作</TableHead>
@@ -150,10 +150,10 @@ export default function ProxyPoolPage() {
                       <div className="max-w-[200px] truncate font-medium">{proxy.label}</div>
                       <div className="font-mono text-[10px] text-muted-foreground">{proxy.id}</div>
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="hidden md:table-cell">
                       <code className="font-mono text-xs text-muted-foreground">{proxy.url_preview}</code>
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="hidden lg:table-cell">
                       {proxy.bound_count > 0 ? (
                         <div className="flex flex-wrap gap-1">
                           {proxy.bound_accounts.map((name) => (

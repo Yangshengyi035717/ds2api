@@ -21,18 +21,35 @@ interface NavItem {
   end?: boolean
 }
 
-const NAV_ITEMS: NavItem[] = [
-  { to: '/', label: '概览', icon: Activity, end: true },
-  { to: '/accounts', label: '账号池', icon: Users },
-  { to: '/browser-login', label: '浏览器登录', icon: LogIn },
-  { to: '/proxies', label: '代理池', icon: Network },
-  { to: '/api-docs', label: 'API 文档', icon: BookOpenText },
-  { to: '/playground', label: 'Playground', icon: FlaskConical },
-  { to: '/settings', label: '设置', icon: Settings },
+const NAV_GROUPS: Array<{ label: string; items: NavItem[] }> = [
+  {
+    label: '运行',
+    items: [
+      { to: '/', label: '概览', icon: Activity, end: true },
+      { to: '/accounts', label: '账号池', icon: Users },
+      { to: '/browser-login', label: '浏览器登录', icon: LogIn },
+      { to: '/proxies', label: '代理池', icon: Network },
+    ],
+  },
+  {
+    label: '开发',
+    items: [
+      { to: '/api-docs', label: 'API 文档', icon: BookOpenText },
+      { to: '/playground', label: 'Playground', icon: FlaskConical },
+    ],
+  },
+  {
+    label: '管理',
+    items: [{ to: '/settings', label: '设置', icon: Settings }],
+  },
 ]
 
 export function Sidebar() {
-  const [collapsed, setCollapsed] = useState(false)
+  // The Codex side panel is often 700-900px wide. Start as an icon rail so
+  // the actual page gets enough horizontal room; users can still expand it.
+  const [collapsed, setCollapsed] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia('(max-width: 1100px)').matches,
+  )
   const location = useLocation()
 
   return (
@@ -58,30 +75,45 @@ export function Sidebar() {
       </div>
 
       {/* Nav */}
-      <nav className="flex-1 space-y-1 p-2">
-        {NAV_ITEMS.map((item) => {
-          const Icon = item.icon
-          const active = item.end
-            ? location.pathname === item.to
-            : location.pathname.startsWith(item.to)
-          return (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.end}
-              className={cn(
-                'flex h-9 items-center gap-2.5 rounded-md px-2.5 text-sm font-medium transition-colors',
-                active
-                  ? 'bg-primary/15 text-primary'
-                  : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
-              )}
-              title={collapsed ? item.label : undefined}
-            >
-              <Icon className="h-4 w-4 shrink-0" />
-              {!collapsed && <span className="truncate">{item.label}</span>}
-            </NavLink>
-          )
-        })}
+      <nav className="flex-1 space-y-4 overflow-y-auto p-2 scrollbar-thin">
+        {NAV_GROUPS.map((group) => (
+          <div key={group.label} className="space-y-1">
+            {!collapsed ? (
+              <div className="px-2.5 pb-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/70">
+                {group.label}
+              </div>
+            ) : (
+              <div className="mx-auto my-2 h-px w-6 bg-border" aria-hidden />
+            )}
+            {group.items.map((item) => {
+              const Icon = item.icon
+              const active = item.end
+                ? location.pathname === item.to
+                : location.pathname.startsWith(item.to)
+              return (
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  end={item.end}
+                  className={cn(
+                    'relative flex h-10 items-center gap-2.5 rounded-md px-2.5 text-sm font-medium transition-colors',
+                    collapsed && 'justify-center px-0',
+                    active
+                      ? 'bg-primary/15 text-primary'
+                      : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
+                  )}
+                  title={collapsed ? item.label : undefined}
+                >
+                  {active && (
+                    <span className="absolute inset-y-2 left-0 w-0.5 rounded-full bg-primary" />
+                  )}
+                  <Icon className="h-4 w-4 shrink-0" />
+                  {!collapsed && <span className="truncate">{item.label}</span>}
+                </NavLink>
+              )
+            })}
+          </div>
+        ))}
       </nav>
 
       {/* Footer */}

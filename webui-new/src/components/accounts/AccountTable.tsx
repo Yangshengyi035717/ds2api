@@ -28,13 +28,13 @@ export function AccountTable({ accounts, onEdit, onDelete, onSelect }: Props) {
       <TableHeader>
         <TableRow>
           <TableHead>标识</TableHead>
-          <TableHead>来源</TableHead>
+          <TableHead className="hidden lg:table-cell">来源</TableHead>
           <TableHead>出口代理</TableHead>
           <TableHead>状态</TableHead>
-          <TableHead>Token</TableHead>
-          <TableHead>Cookies</TableHead>
+          <TableHead className="hidden 2xl:table-cell">Token</TableHead>
+          <TableHead className="hidden 2xl:table-cell">Cookies</TableHead>
           <TableHead className="text-right">错误</TableHead>
-          <TableHead>最后错误</TableHead>
+          <TableHead className="hidden xl:table-cell">最后错误</TableHead>
           <TableHead className="text-right">操作</TableHead>
         </TableRow>
       </TableHeader>
@@ -64,7 +64,7 @@ export function AccountTable({ accounts, onEdit, onDelete, onSelect }: Props) {
                   <TooltipContent>{a.id}</TooltipContent>
                 </Tooltip>
               </TableCell>
-              <TableCell>
+              <TableCell className="hidden lg:table-cell">
                 <Badge variant="secondary">持久化</Badge>
               </TableCell>
               <TableCell>
@@ -86,12 +86,12 @@ export function AccountTable({ accounts, onEdit, onDelete, onSelect }: Props) {
               <TableCell>
                 <StateBadge state={a.state} />
               </TableCell>
-              <TableCell>
+              <TableCell className="hidden 2xl:table-cell">
                 <span className="font-mono text-xs text-muted-foreground">
                   {a.token_preview || '—'}
                 </span>
               </TableCell>
-              <TableCell>
+              <TableCell className="hidden 2xl:table-cell">
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <span className="block max-w-[180px] truncate text-sm text-muted-foreground">
@@ -108,7 +108,7 @@ export function AccountTable({ accounts, onEdit, onDelete, onSelect }: Props) {
                   <span className="text-muted-foreground">0</span>
                 )}
               </TableCell>
-              <TableCell>
+              <TableCell className="hidden xl:table-cell">
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <span className="block max-w-[200px] truncate text-xs text-muted-foreground">

@@ -132,6 +132,8 @@ ALLOW_UNAUTHENTICATED_API=false
 
 # 必填：WebUI 管理面板密码（未设置默认 admin，公网部署前必须修改）
 DEEPSEEK_ADMIN_PASSWORD=change-me
+# WebUI 修改密码后保存 PBKDF2 verifier；此环境值保留为恢复回退
+ADMIN_PASSWORD_STORE_PATH=data/admin_auth.json
 
 # DeepSeek 账号只通过 WebUI「账号池」或 data/accounts.json 配置。
 
@@ -204,7 +206,10 @@ curl http://localhost:8080/v1/models \
 
 > start.bat 会自动构建 WebUI（源码在 `webui-new/`，产物 `webui-new/dist/`）；若手动部署，需先在 `webui-new/` 执行 `npm install && npm run build`。
 
-默认密码为 `.env` 中设置的 `DEEPSEEK_ADMIN_PASSWORD`（未设置则为 `admin`）。公网部署前请务必修改默认密码。
+初始密码为 `.env` 中设置的 `DEEPSEEK_ADMIN_PASSWORD`（未设置则为 `admin`）。
+登录后可在「设置 → 管理员密码」中修改；新密码只以 PBKDF2-SHA256 verifier
+保存到 `data/admin_auth.json`，并立即注销所有管理会话。删除该文件可回退到
+`.env` 初始密码。
 
 账号只从 `data/accounts.json` 加载。WebUI 账号池中的增删改操作会写入该文件；也可以直接维护该 JSON 文件。
 
@@ -214,7 +219,7 @@ WebUI 其他功能包括：
 - **代理池** — 维护 upstream 代理、连通性检测，并按账号绑定稳定出口
 - **API 文档** — OpenAI / Anthropic 接入说明，内置 `/v1/models`、Chat Completions、Messages 在线调试器
 - **Playground** — 在线测试对话（单个模型 + 「思考模式」/「联网搜索」两个开关，支持推理过程可视化）
-- **设置** — 可视化配置公开模型名称、管理 API Key，并查看当前运行时配置
+- **设置** — 可视化配置模型/定价、管理 API Key、修改管理员密码，并查看当前运行时配置
 
 ---
 
@@ -981,7 +986,10 @@ DeepSeek 的 Token 有效期不明确。如果遇到 `401` 或 `403` 响应，�
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `DEEPSEEK_ADMIN_PASSWORD` | `"admin"` | 管理面板登录密码（公网部署必须修改） |
+| `DEEPSEEK_ADMIN_PASSWORD` | `"admin"` | 初始/恢复用管理密码（公网部署必须修改） |
+| `ADMIN_PASSWORD_STORE_PATH` | `data/admin_auth.json` | WebUI 修改后的 PBKDF2 密码 verifier 路径 |
+
+从 WebUI 修改密码后，`data/admin_auth.json` 优先于 `.env`；所有旧管理会话会立即失效。
 
 ### 限流 & 会话
 

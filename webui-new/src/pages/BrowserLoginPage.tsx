@@ -146,7 +146,7 @@ export default function BrowserLoginPage() {
   const active = ['starting', 'waiting_login', 'importing'].includes(current)
 
   return (
-    <div className="space-y-6 animate-fade-in">
+    <div className="space-y-4 animate-fade-in">
       <PageHeader
         title="浏览器登录"
         description="在服务器浏览器中完成 DeepSeek 登录，凭据自动导入账号池"
@@ -171,89 +171,96 @@ export default function BrowserLoginPage() {
         }
       />
 
-      <Card>
-        <CardHeader className="flex-row items-center justify-between space-y-0">
-          <CardTitle className="text-base">会话状态</CardTitle>
-          <span className="rounded-full border px-2.5 py-1 text-xs font-medium">
-            {STATUS_LABELS[current] ?? current}
-          </span>
-        </CardHeader>
-        <CardContent className="space-y-2 text-sm">
-          <p className="text-muted-foreground">{status?.message || '读取中…'}</p>
-          {status?.enabled === false && (
-            <p className="text-amber-600">
-              浏览器登录服务尚未部署。请启动 browser-login 容器并配置
-              BROWSER_LOGIN_URL / BROWSER_LOGIN_SHARED_SECRET。
-            </p>
-          )}
-          {current === 'waiting_login' && (
-            <p className="text-xs text-muted-foreground">
-              如果画面显示 <code className="font-mono">403 Request blocked</code>，
-              说明服务器机房 IP 被上游 CDN 拦截。请在
-              <code className="mx-1 font-mono">.env</code>
-              配置 <code className="font-mono">BROWSER_LOGIN_PROXY</code> 后重启
-              browser-login 容器。
-            </p>
-          )}
-          {status?.account_id && (
-            <p>
-              已导入账号：
-              <code className="ml-1 font-mono text-xs">{status.account_id}</code>
-            </p>
-          )}
-          <div className="rounded-md border bg-muted/40 p-3 text-xs leading-relaxed text-muted-foreground">
-            <p>流程：启动浏览器 → 在下方画面中输入账号密码 / 验证码 → 登录成功后自动导入。</p>
-            <p className="mt-1">
-              浏览器画面通过 noVNC 传输，仅在当前管理员会话中可见。完成后会关闭浏览器，之后由协议保活维持登录态。
-            </p>
-          </div>
-        </CardContent>
-      </Card>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border bg-card px-4 py-3">
+        <span className="rounded-full border bg-background px-2.5 py-1 text-xs font-medium">
+          {STATUS_LABELS[current] ?? current}
+        </span>
+        <p className="min-w-0 flex-1 text-sm text-muted-foreground">
+          {status?.message || '读取中…'}
+        </p>
+        {status?.account_id && (
+          <code className="rounded bg-muted px-2 py-1 font-mono text-[11px]">
+            {status.account_id}
+          </code>
+        )}
+      </div>
 
-      <Card className="overflow-hidden">
-        <CardHeader className="flex-row items-center justify-between space-y-0">
-          <CardTitle className="text-base">远程浏览器</CardTitle>
-          <Button
-            variant="outline"
-            size="sm"
-            asChild
-          >
-            <a
-              href={frameSrc || '/browser-login/vnc.html?autoconnect=1&resize=scale'}
-              target="_blank"
-              rel="noreferrer"
-              className={!frameReady ? 'pointer-events-none opacity-50' : undefined}
-              onClick={(event) => {
-                if (!frameReady) event.preventDefault()
-              }}
-            >
-              <ExternalLink className="h-3.5 w-3.5" />
-              新窗口打开
-            </a>
-          </Button>
-        </CardHeader>
-        <CardContent className="p-0">
-          {frameReady ? (
-            <iframe
-              title="DeepSeek 浏览器登录"
-              src={frameSrc}
-              className="h-[68vh] min-h-[480px] w-full border-0 bg-black"
-              allow="clipboard-read; clipboard-write"
-            />
-          ) : (
-            <div className="flex h-[68vh] min-h-[480px] items-center justify-center bg-muted/30 text-sm text-muted-foreground">
-              {active ? (
-                <span className="flex items-center gap-2">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  浏览器启动后这里会显示远程画面
-                </span>
-              ) : (
-                '点击右上角“启动登录”开始'
-              )}
-            </div>
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+        <Card className="order-1 overflow-hidden">
+          <CardHeader className="flex-row items-center justify-between space-y-0 pb-3">
+            <CardTitle className="text-base">远程浏览器</CardTitle>
+            <Button variant="outline" size="sm" asChild>
+              <a
+                href={frameSrc || '/browser-login/vnc.html?autoconnect=1&resize=scale'}
+                target="_blank"
+                rel="noreferrer"
+                className={!frameReady ? 'pointer-events-none opacity-50' : undefined}
+                onClick={(event) => {
+                  if (!frameReady) event.preventDefault()
+                }}
+              >
+                <ExternalLink className="h-3.5 w-3.5" />
+                新窗口
+              </a>
+            </Button>
+          </CardHeader>
+          <CardContent className="p-0">
+            {frameReady ? (
+              <iframe
+                title="DeepSeek 浏览器登录"
+                src={frameSrc}
+                className="h-[calc(100vh-270px)] min-h-[420px] max-h-[780px] w-full border-0 bg-black"
+                allow="clipboard-read; clipboard-write"
+              />
+            ) : (
+              <div className="flex h-[calc(100vh-270px)] min-h-[420px] max-h-[780px] items-center justify-center bg-muted/30 text-sm text-muted-foreground">
+                {active ? (
+                  <span className="flex items-center gap-2">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    浏览器启动后这里会显示远程画面
+                  </span>
+                ) : (
+                  '点击右上角“启动登录”开始'
+                )}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <div className="order-2 space-y-4 xl:sticky xl:top-4 xl:self-start">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">会话说明</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 text-xs leading-relaxed text-muted-foreground">
+              <p>启动服务器 Chromium，在远程画面完成账号密码和验证码。</p>
+              <p>检测到有效登录后，token、Cookie 与 device_id 会自动进入账号池。</p>
+              <p>浏览器完成后自动关闭，后续由协议保活维持登录态。</p>
+            </CardContent>
+          </Card>
+
+          {status?.enabled === false && (
+            <Card className="border-warning/40 bg-warning/5">
+              <CardContent className="p-4 text-xs leading-relaxed text-muted-foreground">
+                浏览器登录服务尚未部署。请启动 browser-login 容器并配置
+                <code className="mx-1 font-mono">BROWSER_LOGIN_URL</code>
+                与 <code className="font-mono">BROWSER_LOGIN_SHARED_SECRET</code>。
+              </CardContent>
+            </Card>
           )}
-        </CardContent>
-      </Card>
+
+          {current === 'waiting_login' && (
+            <Card className="border-warning/40 bg-warning/5">
+              <CardContent className="p-4 text-xs leading-relaxed text-muted-foreground">
+                如果画面显示 <code className="font-mono">403 Request blocked</code>，
+                说明服务器出口 IP 被上游 CDN 拦截。请配置
+                <code className="mx-1 font-mono">BROWSER_LOGIN_PROXY</code>
+                后重启 browser-login 容器。
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      </div>
     </div>
   )
 }

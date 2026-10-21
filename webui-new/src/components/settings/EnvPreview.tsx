@@ -19,6 +19,8 @@ interface EnvInfoResponse {
   insecure_public_defaults: boolean
   admin_password_set: boolean
   admin_password_weak: boolean
+  admin_password_source: 'webui' | 'env' | string
+  admin_password_updated_at: number
   accounts_total: number
   crypto: {
     enabled: boolean
@@ -78,6 +80,7 @@ export function EnvPreview() {
 
   return (
     <div className="space-y-4">
+      <div className="grid gap-4 md:grid-cols-2">
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-base">运行时</CardTitle>
@@ -97,8 +100,22 @@ export function EnvPreview() {
         <CardContent className="space-y-1.5 text-sm">
           <Row
             k="管理员密码"
-            v={info.admin_password_weak ? '⚠ 弱密码（默认值）' : '已设置强密码'}
+            v={
+              info.admin_password_weak
+                ? '⚠ 弱密码（默认值）'
+                : info.admin_password_source === 'webui'
+                  ? 'WebUI 持久化'
+                  : '.env 初始值'
+            }
             warn={info.admin_password_weak}
+          />
+          <Row
+            k="密码最后修改"
+            v={
+              info.admin_password_updated_at
+                ? new Date(info.admin_password_updated_at * 1000).toLocaleString()
+                : '—'
+            }
           />
           <Row
             k="ALLOW_INSECURE_PUBLIC_DEFAULTS"
@@ -158,12 +175,19 @@ export function EnvPreview() {
           <Row k="DSML_MAX_BUFFER_BYTES" v={info.dsml_max_buffer_bytes.toLocaleString('en-US')} />
         </CardContent>
       </Card>
+      </div>
 
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-base">所有环境变量</CardTitle>
-        </CardHeader>
-        <CardContent className="p-0">
+      <details className="group rounded-lg border bg-card">
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3">
+          <div>
+            <div className="text-base font-semibold">所有环境变量</div>
+            <div className="text-xs text-muted-foreground">
+              默认折叠，展开后查看完整生效值
+            </div>
+          </div>
+          <Badge variant="outline">{info.env_overrides.length} 项</Badge>
+        </summary>
+        <div className="border-t p-0">
           <Table>
             <TableHeader>
               <TableRow>
@@ -190,8 +214,8 @@ export function EnvPreview() {
               ))}
             </TableBody>
           </Table>
-        </CardContent>
-      </Card>
+        </div>
+      </details>
     </div>
   )
 }
