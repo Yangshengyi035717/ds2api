@@ -379,27 +379,31 @@ class KimiAdapter:
         ready_out: dict | None = None,
         upstream_model: str | None = None,
     ):
-        response = self._open_chat(
-            prompt,
-            model=upstream_model or kimi_upstream_model_name(),
-            thinking=thinking_enabled,
-            search=search_enabled,
-        )
-        try:
+        for attempt in range(2):
+            response = self._open_chat(
+                prompt,
+                model=upstream_model or kimi_upstream_model_name(),
+                thinking=thinking_enabled,
+                search=search_enabled,
+            )
             yielded = False
-            for event in _iter_connect_events(response):
-                if "done" in event:
-                    break
-                for kind, text in self._event_chunks(event):
-                    yielded = True
-                    if kind == "thinking":
-                        yield {"__type": "thinking", "content": text}
-                    else:
-                        yield text
-            if not yielded:
-                raise UpstreamTransientError("Kimi returned an empty stream")
-        finally:
-            response.close()
+            try:
+                for event in _iter_connect_events(response):
+                    if "done" in event:
+                        break
+                    for kind, text in self._event_chunks(event):
+                        yielded = True
+                        if kind == "thinking":
+                            yield {"__type": "thinking", "content": text}
+                        else:
+                            yield text
+            finally:
+                response.close()
+            if yielded:
+                return
+            if attempt == 0:
+                time.sleep(0.4)
+        raise UpstreamTransientError("Kimi returned an empty stream")
 
     def chat(
         self,
