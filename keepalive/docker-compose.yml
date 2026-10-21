@@ -1,0 +1,25 @@
+services:
+  keepalive:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: dsapi-keepalive:local
+    container_name: dsapi-keepalive
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      DS2API_URL: http://127.0.0.1:3011
+      DS2API_ADMIN_TOKEN: ${DS2API_ADMIN_TOKEN}
+      DS2API_ACCOUNT_ID: ${DS2API_ACCOUNT_ID}
+      KEEPALIVE_INTERVAL: ${KEEPALIVE_INTERVAL:-900}
+      DEEPSEEK_IMPERSONATE: ${DEEPSEEK_IMPERSONATE:-chrome150}
+      DEEPSEEK_CLIENT_VERSION: ${DEEPSEEK_CLIENT_VERSION:-2.5.0}
+      KEEPALIVE_DEVICE_ID_FILE: /data/device_id
+      TZ: Asia/Shanghai
+    volumes:
+      - ./data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

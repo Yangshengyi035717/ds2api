@@ -19,6 +19,17 @@ def test_model_name_defaults_to_constructor_or_env(monkeypatch, tmp_path):
     assert store.model_name == "env-model"
     assert store.snapshot() == {
         "model_name": "env-model",
+        "display_name": "env-model",
+        "pricing": {
+            "currency": "USD",
+            "billing_mode": "token",
+            "input_price": None,
+            "output_price": None,
+            "cache_read_price": None,
+            "cache_write_price": None,
+            "per_request_price": None,
+            "rate_multiplier": 1.0,
+        },
         "source": "env",
         "persisted": False,
         "default_model_name": "env-model",
@@ -35,6 +46,17 @@ def test_model_name_is_persisted_and_reloaded(tmp_path):
     assert json.loads(path.read_text(encoding="utf-8")) == {
         "version": 1,
         "model_name": "custom-model",
+        "display_name": "DeepSeek Chat",
+        "pricing": {
+            "currency": "USD",
+            "billing_mode": "token",
+            "input_price": None,
+            "output_price": None,
+            "cache_read_price": None,
+            "cache_write_price": None,
+            "per_request_price": None,
+            "rate_multiplier": 1.0,
+        },
     }
 
     reopened = RuntimeConfigStore(path, default_model_name="deepseek-chat")
@@ -101,10 +123,22 @@ def test_runtime_config_admin_route_updates_immediately(runtime_admin_client):
 
     updated = client.put(
         "/admin/api/runtime-config",
-        json={"model_name": "my-custom-model"},
+        json={
+            "model_name": "my-custom-model",
+            "display_name": "My Model",
+            "pricing": {
+                "currency": "CNY",
+                "billing_mode": "token",
+                "input_price": 0.5,
+                "output_price": 1.5,
+                "rate_multiplier": 0.8,
+            },
+        },
         headers=headers,
     )
     assert updated.status_code == 200
     assert updated.json()["model_name"] == "my-custom-model"
+    assert updated.json()["display_name"] == "My Model"
+    assert updated.json()["pricing"]["rate_multiplier"] == 0.8
     assert updated.json()["source"] == "webui"
     assert store.model_name == "my-custom-model"

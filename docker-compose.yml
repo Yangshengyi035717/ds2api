@@ -1,0 +1,86 @@
+services:
+  dsapi:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: dsapi:local
+    container_name: dsapi
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8080
+      TZ: Asia/Shanghai
+      BROWSER_LOGIN_URL: http://browser-login:8000
+      BROWSER_LOGIN_SHARED_SECRET: ${BROWSER_LOGIN_SHARED_SECRET}
+    ports:
+      # Loopback only: Nginx proxies to 127.0.0.1:3011. Publishing on
+      # 0.0.0.0 would expose the API and WebUI directly to the internet,
+      # bypassing TLS and any edge protection.
+      - "127.0.0.1:3011:8080"
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3).read()"
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  browser-login:
+    build:
+      context: ./browser-login
+      dockerfile: Dockerfile
+    image: dsapi-browser-login:local
+    container_name: dsapi-browser-login
+    restart: unless-stopped
+    environment:
+      DS2API_INGEST_URL: http://dsapi:8080/admin/api/browser-login/ingest
+      BROWSER_LOGIN_SHARED_SECRET: ${BROWSER_LOGIN_SHARED_SECRET}
+      BROWSER_LOGIN_PROFILE_DIR: /data/browser-profile
+      BROWSER_LOGIN_SCREEN: 1440x900x24
+      BROWSER_LOGIN_VIEW_TTL: 7200
+      BROWSER_LOGIN_PROXY: ${BROWSER_LOGIN_PROXY:-}
+      TZ: Asia/Shanghai
+    ports:
+      # Loopback only: Nginx fronts noVNC and requires a short-lived view
+      # cookie before proxying either the HTML or the WebSocket.
+      - "127.0.0.1:6080:6080"
+    volumes:
+      - ./data/browser-profile:/data/browser-profile
+    security_opt:
+      # Chromium's sandbox is disabled inside the container; keep the sidecar
+      # from gaining privileges through setuid binaries.
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=256m
+      - /run:size=32m
+    depends_on:
+      dsapi:
+        condition: service_healthy
+    shm_size: "1gb"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()"
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"

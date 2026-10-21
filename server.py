@@ -18,15 +18,22 @@ from dotenv import load_dotenv
 import os as _os
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
+from fastapi.exception_handlers import (
+    http_exception_handler,
+    request_validation_exception_handler,
+)
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import StreamingResponse, FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from adapter import (
     DeepSeekAdapter,
     UpstreamEmptyError,
     UpstreamHintError,
+    UpstreamTransientError,
     RateLimitError,
     UserMutedError,
 )
@@ -37,6 +44,7 @@ from admin import (
     is_admin_password_weak,
     verify_admin_token,
 )
+import browser_login_client
 from stats_history import start_sampler
 from model_router import DEFAULT_MODEL_TYPE
 from tool_dsml import (
@@ -52,6 +60,15 @@ from anthropic_format import (
     stream_response,
     _msg_id,
 )
+from responses_format import (
+    ResponsesStreamTranslator,
+    build_nonstream_response as build_responses_nonstream,
+    input_to_chat_messages,
+    parse_chat_sse_event,
+    requested_search,
+    requested_thinking,
+    tools_to_chat_tools,
+)
 from logger import get_logger, configure_from_env
 from crypto import is_enabled as crypto_is_enabled
 from token_counter import count_text
@@ -66,6 +83,11 @@ load_dotenv()
 configure_from_env()
 log = get_logger("server")
 API_KEY_STORE = get_api_key_store()
+MODEL_CREATED_AT = int(os.environ.get("MODEL_CREATED_AT", str(int(time.time()))))
+
+#: Seconds a parent gateway should wait before retrying after an upstream
+#: transient outage ('服务器暂时不可用' / generation_err).
+TRANSIENT_RETRY_AFTER_SECS = os.environ.get("DEEPSEEK_TRANSIENT_RETRY_AFTER", "5")
 
 
 def _model_name() -> str:
@@ -206,6 +228,66 @@ def _check_rate_limit(request: Request) -> dict:
 
 app = FastAPI(title="DeepSeek Chat API", version="3.3.8")
 
+
+def _openai_error_payload(
+    message: str,
+    error_type: str = "api_error",
+    code: str | None = None,
+) -> dict:
+    error = {"message": message, "type": error_type}
+    if code:
+        error["code"] = code
+    return {"error": error}
+
+
+def _openai_error_type(status_code: int) -> tuple[str, str]:
+    if status_code in {400, 422}:
+        return "invalid_request_error", "invalid_request"
+    if status_code == 401:
+        return "authentication_error", "invalid_api_key"
+    if status_code == 403:
+        return "permission_error", "permission_denied"
+    if status_code == 404:
+        return "not_found_error", "not_found"
+    if status_code == 409:
+        return "conflict_error", "conflict"
+    if status_code == 429:
+        return "rate_limit_error", "rate_limit_exceeded"
+    if status_code >= 500:
+        return "api_error", "upstream_error"
+    return "api_error", "api_error"
+
+
+@app.exception_handler(StarletteHTTPException)
+async def _v1_http_exception_handler(request: Request, exc: StarletteHTTPException):
+    if not (request.url.path.startswith("/v1") or request.url.path == "/responses"):
+        return await http_exception_handler(request, exc)
+    error_type, code = _openai_error_type(exc.status_code)
+    message = (
+        exc.detail
+        if isinstance(exc.detail, str)
+        else json.dumps(exc.detail, ensure_ascii=False)
+    )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=_openai_error_payload(message, error_type, code),
+        headers=exc.headers,
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def _v1_validation_exception_handler(request: Request, exc: RequestValidationError):
+    if not (request.url.path.startswith("/v1") or request.url.path == "/responses"):
+        return await request_validation_exception_handler(request, exc)
+    return JSONResponse(
+        status_code=422,
+        content=_openai_error_payload(
+            "Invalid request body",
+            "invalid_request_error",
+            "invalid_request",
+        ),
+    )
+
 # ── CORS ─────────────────────────────────────────────────────────────
 # Empty ALLOWED_ORIGINS ⇒ same-origin only. We deliberately do NOT set
 # `allow_origins=["*"]` with `allow_credentials=True` (spec violation; most
@@ -229,7 +311,12 @@ else:
 async def _add_security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    response.headers.setdefault("X-Frame-Options", "DENY")
+    # The browser-login view is the only page that must be frameable, and
+    # only by the same-origin WebUI. Everything else keeps DENY.
+    if request.url.path.startswith("/browser-login"):
+        response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    else:
+        response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "no-referrer")
     response.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
     # WebUI gets an extra CSP; JSON APIs do not (SSE is not worth breaking).
@@ -242,7 +329,19 @@ async def _add_security_headers(request: Request, call_next):
             "script-src 'self'; "
             "img-src 'self' data:; "
             "connect-src 'self'; "
+            "frame-src 'self'; "
             "frame-ancestors 'none'; "
+            "base-uri 'self'",
+        )
+    elif path.startswith("/browser-login"):
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; "
+            "connect-src 'self' ws: wss:; "
+            "frame-ancestors 'self'; "
             "base-uri 'self'",
         )
     return response
@@ -357,6 +456,10 @@ class ToolDef(BaseModel):
     function: FunctionDef
 
 
+class StreamOptions(BaseModel):
+    include_usage: Optional[bool] = False
+
+
 class ChatCompletionRequest(BaseModel):
     model: Optional[str] = None
     messages: list[ChatMessage]
@@ -373,18 +476,71 @@ class ChatCompletionRequest(BaseModel):
     # thinking_enabled, search_enabled → upstream search_enabled.
     thinking_mode: Optional[bool] = False
     search_enabled: Optional[bool] = False
+    stream_options: Optional[StreamOptions] = None
+
+
+class ResponsesRequest(BaseModel):
+    model: Optional[str] = None
+    input: Optional[Union[str, list[dict[str, Any]]]] = None
+    instructions: Optional[Union[str, list[dict[str, Any]]]] = None
+    stream: Optional[bool] = False
+    tools: Optional[list[dict[str, Any]]] = None
+    tool_choice: Optional[Union[str, dict]] = None
+    max_output_tokens: Optional[int] = None
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    user: Optional[str] = None
+    previous_response_id: Optional[str] = None
+    reasoning: Optional[dict] = None
+    text: Optional[dict] = None
+    metadata: Optional[dict] = None
+    store: Optional[bool] = False
+    parallel_tool_calls: Optional[bool] = True
+    truncation: Optional[str] = "disabled"
 
 
 class ModelInfo(BaseModel):
     id: str
     object: str = "model"
     created: int
-    owned_by: str = "deepseek"
+    owned_by: str = "ds2api"
+    display_name: Optional[str] = None
+    reasoning: Optional[bool] = None
+    input_modalities: Optional[list[str]] = None
+    supported_endpoints: Optional[list[str]] = None
 
 
 class ModelList(BaseModel):
     object: str = "list"
     data: list[ModelInfo]
+
+
+def _model_display_name(name: str) -> str:
+    snapshot = get_runtime_config().snapshot()
+    if name == snapshot["model_name"]:
+        return str(snapshot["display_name"])
+    configured = os.environ.get("MODEL_DISPLAY_NAME", "").strip()
+    if configured:
+        return configured
+    if name == "deepseek-chat":
+        return "DeepSeek Chat"
+    return name
+
+
+def _available_model_names() -> list[str]:
+    return MODEL_ROUTER.models or [_model_name()]
+
+
+def _build_model_info(name: str) -> ModelInfo:
+    return ModelInfo(
+        id=name,
+        created=MODEL_CREATED_AT,
+        owned_by="ds2api",
+        display_name=_model_display_name(name),
+        reasoning=True,
+        input_modalities=["text"],
+        supported_endpoints=["/chat/completions", "/responses", "/messages"],
+    )
 
 
 # ---- Account pool helpers ----
@@ -668,7 +824,8 @@ def _build_prompt(messages: list[ChatMessage], tools: list[ToolDef] | None = Non
 # ---- OpenAI SSE helpers ----
 
 def _openai_chunk(proxy_id: str, content: str = "", finish: bool = False,
-                  reasoning_content: str = None, role: str = None) -> str:
+                  reasoning_content: str = None, role: str = None,
+                  usage: dict | None = None) -> str:
     delta = {}
     if not finish:
         if role:
@@ -689,10 +846,28 @@ def _openai_chunk(proxy_id: str, content: str = "", finish: bool = False,
         "model": _model_name(),
         "choices": [choice],
     }
+    if usage is not None:
+        chunk["usage"] = usage
     return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
 
 
-def _emit_tool_calls_chunks(tool_calls: list[dict], chat_id: str) -> list[str]:
+def _openai_usage_chunk(proxy_id: str, usage: dict) -> str:
+    chunk = {
+        "id": proxy_id,
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": _model_name(),
+        "choices": [],
+        "usage": usage,
+    }
+    return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+
+
+def _emit_tool_calls_chunks(
+    tool_calls: list[dict],
+    chat_id: str,
+    usage: dict | None = None,
+) -> list[str]:
     """生成 OpenAI 流式 tool_calls SSE 事件。"""
     chunks = []
     created = int(time.time())
@@ -718,7 +893,16 @@ def _emit_tool_calls_chunks(tool_calls: list[dict], chat_id: str) -> list[str]:
         }
         chunks.append(f"data: {json.dumps({'id': chat_id, 'object': 'chat.completion.chunk', 'created': created, 'model': _model_name(), 'choices': [{'index': 0, 'delta': delta2, 'finish_reason': None}]}, ensure_ascii=False)}\n\n")
     # finish
-    chunks.append(f"data: {json.dumps({'id': chat_id, 'object': 'chat.completion.chunk', 'created': created, 'model': _model_name(), 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'tool_calls'}]}, ensure_ascii=False)}\n\n")
+    finish_chunk = {
+        "id": chat_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": _model_name(),
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
+    }
+    if usage is not None:
+        finish_chunk["usage"] = usage
+    chunks.append(f"data: {json.dumps(finish_chunk, ensure_ascii=False)}\n\n")
     return chunks
 
 
@@ -750,13 +934,66 @@ async def health():
 async def list_models(request: Request):
     _check_api_auth(request)
     rate_headers = _check_rate_limit(request)
-    # One model only. MODEL_ROUTES is an optional advanced override for per-name
-    # capability presets; when it is set its names are what clients can ask for.
-    names = MODEL_ROUTER.models or [_model_name()]
+    names = _available_model_names()
     return JSONResponse(
-        ModelList(data=[
-            ModelInfo(id=name, created=int(time.time())) for name in names
-        ]).model_dump(),
+        ModelList(data=[_build_model_info(name) for name in names]).model_dump(),
+        headers=rate_headers,
+    )
+
+
+@app.get("/v1/models/{model_id:path}")
+async def retrieve_model(model_id: str, request: Request):
+    _check_api_auth(request)
+    rate_headers = _check_rate_limit(request)
+    if model_id not in _available_model_names():
+        raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found")
+    return JSONResponse(
+        _build_model_info(model_id).model_dump(),
+        headers=rate_headers,
+    )
+
+
+@app.get("/v1/provider-manifest")
+async def provider_manifest(request: Request):
+    """Expose a stable capability manifest for external gateway synchronizers."""
+    _check_api_auth(request)
+    rate_headers = _check_rate_limit(request)
+    pricing = get_runtime_config().snapshot()["pricing"]
+    models = []
+    for name in _available_model_names():
+        info = _build_model_info(name)
+        models.append({
+            **info.model_dump(),
+            "endpoints": info.supported_endpoints,
+            "capabilities": {
+                "stream": True,
+                "thinking": True,
+                "search": SEARCH != "disabled",
+                "tools": True,
+                "responses": True,
+                "vision": False,
+            },
+            "pricing": pricing,
+        })
+    return JSONResponse(
+        {
+            "schema_version": 1,
+            "provider": {
+                "id": "ds2api",
+                "display_name": "DS2API",
+                "protocols": [
+                    "openai.chat_completions",
+                    "openai.responses",
+                    "anthropic.messages",
+                ],
+            },
+            "models": models,
+            "pricing": {
+                "automatic": False,
+                "managed_by": "sub2api",
+                "source": "ds2api_runtime_config",
+            },
+        },
         headers=rate_headers,
     )
 
@@ -782,8 +1019,9 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
     openai_user = _extract_openai_user(req, request)
     cache_key = _cache_key(request, openai_user)
     if req.stream:
+        include_usage = bool(req.stream_options and req.stream_options.include_usage)
         return await _handle_stream(proxy_id, prompt, req.tools, model_type=model_type, thinking_mode=thinking, search_enabled=search, rate_headers=rate_headers,
-                                    cache_key=cache_key)
+                                    cache_key=cache_key, include_usage=include_usage)
 
     return _handle_nonstream(proxy_id, prompt, req.tools, model_type=model_type, thinking_mode=thinking, search_enabled=search,
                              cache_key=cache_key)
@@ -869,6 +1107,17 @@ def _anthropic_nonstream(msg_id: str, prompt: str, tool_names: list[str],
             status_code=429,
             detail=f"上游限流：{e.args[0] if e.args else '请求过于频繁'}，请稍后重试",
         )
+    except UpstreamTransientError as e:
+        # Upstream outage, not a credential problem: keep the account
+        # schedulable and let the caller retry after the advertised delay.
+        get_stats().record(_model_name(), 0, success=False)
+        if cache_key:
+            SESSION_CACHE.invalidate(cache_key)
+        raise HTTPException(
+            status_code=503,
+            detail=f"上游暂时不可用，请稍后重试（{str(e)[:200]}）",
+            headers={"Retry-After": TRANSIENT_RETRY_AFTER_SECS},
+        )
     except UpstreamHintError as e:
         get_stats().record(_model_name(), 0, success=False)
         pool.mark_error(acq.acct, str(e))
@@ -935,7 +1184,7 @@ async def _anthropic_stream(msg_id: str, prompt: str, tool_names: list[str],
             get_stats().record(_model_name(), (time.time() - t0) * 1000)
         except Exception as e:
             get_stats().record(_model_name(), (time.time() - t0) * 1000, success=False)
-            if isinstance(e, (RateLimitError, UpstreamEmptyError)):
+            if isinstance(e, (RateLimitError, UpstreamEmptyError, UpstreamTransientError)):
                 if cache_key:
                     SESSION_CACHE.invalidate(cache_key)
             else:
@@ -990,6 +1239,18 @@ def _handle_nonstream(proxy_id: str, prompt: str, tools: list[ToolDef] | None = 
         if cache_key:
             SESSION_CACHE.invalidate(cache_key)
         raise HTTPException(status_code=429, detail=f"上游限流：{e.args[0] if e.args else '请求过于频繁'}，请稍后重试")
+    except UpstreamTransientError as e:
+        # Same reasoning as rate limiting: a transient upstream outage must
+        # not drain the pool. 503 + Retry-After lets a parent gateway fail
+        # over or retry instead of treating it as a hard error.
+        get_stats().record(_model_name(), 0, success=False)
+        if cache_key:
+            SESSION_CACHE.invalidate(cache_key)
+        raise HTTPException(
+            status_code=503,
+            detail=f"上游暂时不可用，请稍后重试（{str(e)[:200]}）",
+            headers={"Retry-After": TRANSIENT_RETRY_AFTER_SECS},
+        )
     except UpstreamHintError as e:
         get_stats().record(_model_name(), 0, success=False)
         pool.mark_error(acq.acct, str(e))
@@ -1064,11 +1325,133 @@ def _handle_nonstream(proxy_id: str, prompt: str, tools: list[ToolDef] | None = 
     }
 
 
+@app.post("/v1/responses")
+@app.post("/responses")
+async def responses(req: ResponsesRequest, request: Request):
+    """Minimal OpenAI Responses API compatibility over the Chat Completions core."""
+    _check_api_auth(request)
+    rate_headers = _check_rate_limit(request)
+
+    raw_messages = input_to_chat_messages(req.input, req.instructions)
+    if not raw_messages:
+        raise HTTPException(status_code=400, detail="Responses input must contain at least one message")
+    try:
+        messages = [ChatMessage(**message) for message in raw_messages]
+        tools = [ToolDef(**tool) for tool in tools_to_chat_tools(req.tools)]
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid Responses payload: {exc}")
+
+    decision = MODEL_ROUTER.route_for(req.model)
+    model_type, thinking, search = resolve_model_controls(
+        decision,
+        req_thinking=requested_thinking(req.reasoning),
+        req_search=requested_search(req.tools),
+    )
+    prompt = _build_prompt(messages, tools or None, req.tool_choice)
+
+    conversation_id = request.headers.get("X-Conversation-Id", "").strip()
+    if conversation_id:
+        conversation_id = f"header:{conversation_id}"
+    else:
+        conversation_id = SessionCache.derive_conversation_id(req.user, None)
+    cache_key = _cache_key(request, conversation_id)
+    response_id = f"resp_{uuid.uuid4().hex}"
+    request_data = req.model_dump()
+
+    if not req.stream:
+        chat_payload = _handle_nonstream(
+            response_id,
+            prompt,
+            tools or None,
+            model_type=model_type,
+            thinking_mode=thinking,
+            search_enabled=search,
+            cache_key=cache_key,
+        )
+        return JSONResponse(
+            build_responses_nonstream(chat_payload, response_id, request_data),
+            headers=rate_headers,
+        )
+
+    chat_response = await _handle_stream(
+        response_id,
+        prompt,
+        tools or None,
+        model_type=model_type,
+        thinking_mode=thinking,
+        search_enabled=search,
+        cache_key=cache_key,
+        include_usage=True,
+    )
+    translator = ResponsesStreamTranslator(response_id, _model_name(), request_data)
+
+    async def event_stream():
+        for event in translator.initial_events():
+            yield event
+
+        buffer = ""
+        failed = False
+        async for raw_chunk in chat_response.body_iterator:
+            text = raw_chunk.decode("utf-8") if isinstance(raw_chunk, bytes) else str(raw_chunk)
+            buffer += text.replace("\r\n", "\n")
+            separator = buffer.find("\n\n")
+            while separator != -1:
+                event_block = buffer[:separator]
+                buffer = buffer[separator + 2:]
+                for payload in parse_chat_sse_event(event_block):
+                    if payload == "[DONE]":
+                        continue
+                    try:
+                        chunk = json.loads(payload)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(chunk.get("error"), dict):
+                        failed = True
+                        yield translator.error_event(
+                            str(chunk["error"].get("message") or "Upstream error")
+                        )
+                        continue
+                    for event in translator.feed_chat_chunk(chunk):
+                        yield event
+                separator = buffer.find("\n\n")
+
+        if buffer.strip():
+            for payload in parse_chat_sse_event(buffer):
+                if payload != "[DONE]":
+                    try:
+                        chunk = json.loads(payload)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(chunk.get("error"), dict):
+                        failed = True
+                        yield translator.error_event(
+                            str(chunk["error"].get("message") or "Upstream error")
+                        )
+                    else:
+                        for event in translator.feed_chat_chunk(chunk):
+                            yield event
+
+        if not failed:
+            for event in translator.final_events():
+                yield event
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            **rate_headers,
+        },
+    )
+
+
 async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None = None,
                          model_type: str | None = None,
                          thinking_mode: bool = False, search_enabled: bool = False,
                          rate_headers: dict | None = None,
-                         cache_key: str | None = None):
+                         cache_key: str | None = None,
+                         include_usage: bool = False):
     """Streaming completion with StreamSieve tool call detection and thinking support."""
     prompt_tokens = count_text(prompt)
     acq = _acquire(cache_key=cache_key)
@@ -1090,6 +1473,15 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
         # (and the actual session id after a retry-swap). Recorded into the
         # session cache on success so the next turn has a valid parent.
         ready_out: dict = {}
+
+        def _usage_snapshot(completion_text: str) -> dict:
+            completion_tokens = count_text(completion_text)
+            return {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": prompt_tokens + completion_tokens,
+            }
+
         try:
             yield _openai_chunk(proxy_id, finish=False)
             role_sent = False
@@ -1145,9 +1537,18 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
                             else:
                                 yield _openai_chunk(proxy_id, content=evt.data)
                     elif evt.type == "tool_calls":
-                        for chunk in _emit_tool_calls_chunks(evt.data, proxy_id):
+                        usage = _usage_snapshot(full_buf)
+                        for chunk in _emit_tool_calls_chunks(evt.data, proxy_id, usage=usage):
                             yield chunk
+                        if include_usage:
+                            yield _openai_usage_chunk(proxy_id, usage)
                         _record_turn()
+                        get_stats().record(
+                            _model_name(),
+                            (time.time() - t0) * 1000,
+                            prompt_tokens=prompt_tokens,
+                            completion_tokens=usage["completion_tokens"],
+                        )
                         yield "data: [DONE]\n\n"
                         return
 
@@ -1169,7 +1570,16 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
                         yield chunk
 
             if had_tool:
+                usage = _usage_snapshot(full_buf)
+                if include_usage:
+                    yield _openai_usage_chunk(proxy_id, usage)
                 _record_turn()
+                get_stats().record(
+                    _model_name(),
+                    (time.time() - t0) * 1000,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=usage["completion_tokens"],
+                )
                 yield "data: [DONE]\n\n"
                 return
 
@@ -1183,23 +1593,34 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
                         role_sent = True
                     for chunk in _emit_tool_calls_chunks(tc_result, proxy_id):
                         yield chunk
+                    usage = _usage_snapshot(full_buf)
+                    if include_usage:
+                        yield _openai_usage_chunk(proxy_id, usage)
                     _record_turn()
+                    get_stats().record(
+                        _model_name(),
+                        (time.time() - t0) * 1000,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=usage["completion_tokens"],
+                    )
                     yield "data: [DONE]\n\n"
                     return
 
             _record_turn()
-            yield _openai_chunk(proxy_id, finish=True)
+            usage = _usage_snapshot("".join(completion_parts))
+            yield _openai_chunk(proxy_id, finish=True, usage=usage)
+            if include_usage:
+                yield _openai_usage_chunk(proxy_id, usage)
             yield "data: [DONE]\n\n"
-            completion_tokens = count_text("".join(completion_parts))
             get_stats().record(_model_name(), (time.time() - t0) * 1000,
                                prompt_tokens=prompt_tokens,
-                               completion_tokens=completion_tokens)
+                               completion_tokens=usage["completion_tokens"])
         except Exception as e:
             get_stats().record(_model_name(), (time.time() - t0) * 1000, success=False,
                                prompt_tokens=prompt_tokens)
             # Rate limit / transient empty responses are not credential
             # failures — keep the account usable instead of draining the pool.
-            if isinstance(e, (RateLimitError, UpstreamEmptyError)):
+            if isinstance(e, (RateLimitError, UpstreamEmptyError, UpstreamTransientError)):
                 if cache_key:
                     SESSION_CACHE.invalidate(cache_key)
             else:
@@ -1207,6 +1628,14 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
             log.exception("openai_stream_failed")
             # Emit a uniform error frame to the client, then [DONE] so the
             # client SDK doesn't see a truncated stream.
+            if isinstance(e, RateLimitError):
+                err_type, err_code, retry_after = "rate_limit_error", "rate_limit_exceeded", TRANSIENT_RETRY_AFTER_SECS
+            elif isinstance(e, UpstreamTransientError):
+                err_type, err_code, retry_after = "api_error", "upstream_temporarily_unavailable", TRANSIENT_RETRY_AFTER_SECS
+            elif isinstance(e, UpstreamEmptyError):
+                err_type, err_code, retry_after = "api_error", "upstream_empty_response", TRANSIENT_RETRY_AFTER_SECS
+            else:
+                err_type, err_code, retry_after = "upstream_error", "upstream_error", None
             err = {
                 "id": proxy_id,
                 "object": "chat.completion.chunk",
@@ -1218,10 +1647,13 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
                     "finish_reason": "error",
                 }],
                 "error": {
-                    "type": "upstream_error",
+                    "type": err_type,
+                    "code": err_code,
                     "message": str(e)[:500],
                 },
             }
+            if retry_after:
+                err["error"]["retry_after"] = int(retry_after)
             yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"
         finally:
@@ -1261,6 +1693,42 @@ _WEBUI_DIR = (
 )
 
 app.include_router(admin_router)
+
+
+@app.get("/browser-login/view")
+async def browser_login_view(request: Request, token: str = ""):
+    """Set the short-lived view cookie, then redirect into the noVNC proxy.
+
+    The token is never placed in an iframe URL that stays in browser history;
+    it is exchanged once for an HttpOnly, SameSite=Strict cookie.
+    """
+    if not await browser_login_client.verify_view_token(token):
+        raise HTTPException(status_code=401, detail="Invalid or expired view token")
+    response = JSONResponse({"ok": True})
+    forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip()
+    secure_cookie = request.url.scheme == "https" or forwarded_proto == "https"
+    response.set_cookie(
+        "browser_login_view",
+        token,
+        max_age=7200,
+        httponly=True,
+        secure=secure_cookie,
+        samesite="strict",
+        path="/browser-login",
+    )
+    return response
+
+
+@app.get("/browser-login/auth")
+async def browser_login_view_auth(request: Request):
+    """Validate a one-time noVNC view token before Nginx upgrades WebSocket."""
+    supplied = (
+        request.headers.get("X-View-Token", "")
+        or request.cookies.get("browser_login_view", "")
+    )
+    if not await browser_login_client.verify_view_token(supplied):
+        raise HTTPException(status_code=401, detail="Invalid or expired view token")
+    return Response(status_code=204)
 
 
 def _safe_webui_path(rest_of_path: str) -> str | None:

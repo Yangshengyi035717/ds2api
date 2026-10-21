@@ -55,6 +55,10 @@ export function AccountDetailDrawer({ account, onClose, onRelogin }: Props) {
                 <DetailRow label="ID" value={account.id} mono copyable />
                 <DetailRow label="标识" value={account.email || '—'} />
                 <DetailRow label="来源" value="data/accounts.json" />
+                <DetailRow
+                  label="Device ID"
+                  value={account.has_device_id ? account.device_id_preview : '未绑定'}
+                />
                 <DetailRow label="状态" value={account.state} />
                 <DetailRow
                   label="出口代理"

@@ -72,6 +72,17 @@ function openAiRequest(modelName: string) {
 }`
 }
 
+function responsesRequest(modelName: string) {
+  return `curl -N "${ORIGIN}/v1/responses" \\
+  -H "Authorization: Bearer YOUR_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "${modelName}",
+    "input": "你好，介绍一下你自己",
+    "stream": true
+  }'`
+}
+
 function anthropicPython(modelName: string) {
   return `from anthropic import Anthropic
 
@@ -102,6 +113,27 @@ function anthropicCurl(modelName: string) {
     "messages": [{"role": "user", "content": "hello"}],
     "stream": true
   }'`
+}
+
+function sub2apiAccount(modelName: string) {
+  return `{
+  "name": "DS2API",
+  "platform": "deepseek",
+  "type": "apikey",
+  "credentials": {
+    "api_key": "YOUR_API_KEY",
+    "base_url": "${ORIGIN}",
+    "account_mode": "payg",
+    "api_protocol": "chat_completions",
+    "model_mapping": {
+      "deepseek-chat": "${modelName}",
+      "${modelName}": "${modelName}"
+    }
+  },
+  "rate_multiplier": 1.0,
+  "concurrency": 2,
+  "priority": 10
+}`
 }
 
 function MethodPath({ method, path }: { method: 'GET' | 'POST'; path: string }) {
@@ -221,10 +253,12 @@ export default function ApiDocsPage() {
           </Card>
 
           <Tabs defaultValue="quick">
-            <TabsList className="grid h-auto w-full grid-cols-2 sm:grid-cols-4">
+            <TabsList className="grid h-auto w-full grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
               <TabsTrigger value="quick">快速开始</TabsTrigger>
               <TabsTrigger value="openai">OpenAI</TabsTrigger>
+              <TabsTrigger value="responses">Responses</TabsTrigger>
               <TabsTrigger value="anthropic">Anthropic</TabsTrigger>
+              <TabsTrigger value="sub2api">Sub2API</TabsTrigger>
               <TabsTrigger value="errors">错误与限制</TabsTrigger>
             </TabsList>
 
@@ -310,6 +344,33 @@ export default function ApiDocsPage() {
               </Card>
             </TabsContent>
 
+            <TabsContent value="responses" className="space-y-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">OpenAI Responses</CardTitle>
+                  <CardDescription>
+                    兼容 Codex / Responses API；内部转换为现有 Chat Completions 内核和 DeepSeek 会话链。
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <MethodPath method="POST" path="/v1/responses" />
+                  <CodeBlock
+                    code={responsesRequest(modelName)}
+                    title="流式 Responses"
+                    language="bash"
+                  />
+                  <div>
+                    <FieldRow name="input" description="支持字符串或 Responses input item 数组。" />
+                    <FieldRow name="instructions" description="转换为 system 指令。" />
+                    <FieldRow name="stream" description="true 返回 Responses SSE 事件；false 返回 response 对象。" />
+                    <FieldRow name="tools" description="支持 function 工具；内置 web_search 会映射为 DS2API 搜索开关，视觉工具不支持。" />
+                    <FieldRow name="reasoning.effort" description="非 none 时请求 DS2API 思考模式。" />
+                    <FieldRow name="/responses" description="同一接口的无 /v1 别名，兼容 Sub2API DeepSeek 平台 ResponsesPath。" />
+                  </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
             <TabsContent value="anthropic" className="space-y-4">
               <Card>
                 <CardHeader>
@@ -337,6 +398,45 @@ export default function ApiDocsPage() {
                 <CardContent className="space-y-3">
                   <CodeBlock code={anthropicPython(modelName)} title="Python" language="python" />
                   <CodeBlock code={anthropicCurl(modelName)} title="curl" language="bash" />
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="sub2api" className="space-y-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Sub2API DeepSeek 平台</CardTitle>
+                  <CardDescription>
+                    推荐作为 API Key 上游接入，并将上游协议固定为 Chat Completions。
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <CodeBlock
+                    code={sub2apiAccount(modelName)}
+                    title="账号配置"
+                    language="json"
+                  />
+                  <div>
+                    <FieldRow name="platform" description="deepseek；使用 DeepSeek 平台分类与调度。" />
+                    <FieldRow name="type" description="apikey。Sub2API 的上游模型同步依赖该类型。" />
+                    <FieldRow name="base_url" description={`${ORIGIN}；Sub2API 会追加 /v1/models 和 /v1/chat/completions。`} />
+                    <FieldRow name="api_protocol" description="推荐 chat_completions；如需 Codex/Responses，可改为 responses。DS2API 同时提供 /v1/responses 和 /responses。" />
+                    <FieldRow name="model_mapping" description={`将 Sub2API 客户端模型名映射到当前 DS2API 模型 ${modelName}。`} />
+                    <FieldRow name="rate_multiplier" description="这是 Sub2API 本地账号倍率，不会从 DS2API 自动读取。" />
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">可用发现接口</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2 text-sm text-muted-foreground">
+                  <p><code className="font-mono">GET /v1/models</code>：模型 ID、显示名、能力与支持端点。</p>
+                  <p><code className="font-mono">GET /v1/models/&#123;model&#125;</code>：单模型查询。</p>
+                  <p><code className="font-mono">GET /v1/provider-manifest</code>：供外部同步器读取协议和模型能力。</p>
+                  <p><code className="font-mono">POST /v1/responses</code>：Responses API 与 Codex 兼容入口。</p>
+                  <p>可直接运行 <code className="font-mono">scripts/sync_sub2api.py</code> 同步账号、模型、价格与倍率。</p>
                 </CardContent>
               </Card>
             </TabsContent>

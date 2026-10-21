@@ -11,6 +11,12 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from account_pool import AccountPool
+import browser_login_client
+from credential_import import (
+    CredentialImportError,
+    normalize_token,
+    parse_credential_payload,
+)
 from crypto import is_enabled as crypto_is_enabled, _resolve_key
 from ip_utils import get_real_client_ip, is_trusted_proxy
 from logger import get_logger
@@ -200,6 +206,7 @@ class AccountAddRequest(BaseModel):
     cookies: str
     email: str | None = ""
     proxy_id: str | None = ""
+    device_id: str | None = ""
 
 
 class AccountUpdateRequest(BaseModel):
@@ -207,6 +214,21 @@ class AccountUpdateRequest(BaseModel):
     cookies: str | None = None
     email: str | None = None
     proxy_id: str | None = None
+    device_id: str | None = None
+
+
+class CredentialImportRequest(BaseModel):
+    payload: str | dict | list
+
+
+class BrowserLoginStartRequest(BaseModel):
+    reset_profile: bool = True
+
+
+class BrowserLoginIngestRequest(BaseModel):
+    token: str
+    cookies: str = ""
+    device_id: str = ""
 
 
 class AccountReloginResponse(BaseModel):
@@ -219,7 +241,9 @@ class ApiKeyCreateRequest(BaseModel):
 
 
 class RuntimeConfigUpdateRequest(BaseModel):
-    model_name: str
+    model_name: str | None = None
+    display_name: str | None = None
+    pricing: dict | None = None
 
 
 class ProxyAddRequest(BaseModel):
@@ -350,13 +374,25 @@ async def update_runtime_config(
 ):
     _check_auth(request)
     response.headers["Cache-Control"] = "no-store"
+    if req.model_name is None and req.display_name is None and req.pricing is None:
+        raise HTTPException(status_code=400, detail="No runtime configuration fields supplied")
     try:
-        model_name = get_runtime_config().set_model_name(req.model_name)
+        get_runtime_config().update_settings(
+            model_name=req.model_name,
+            display_name=req.display_name,
+            pricing=req.pricing,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"无法保存运行时配置：{e}")
-    log.info("runtime_model_name_updated", extra={"model_name": model_name})
+    log.info(
+        "runtime_model_config_updated",
+        extra={
+            "model_name": get_runtime_config().snapshot()["model_name"],
+            "display_name": get_runtime_config().snapshot()["display_name"],
+        },
+    )
     return {
         **get_runtime_config().snapshot(),
         "model_routes_configured": bool(os.environ.get("MODEL_ROUTES", "").strip()),
@@ -574,6 +610,30 @@ async def list_accounts(request: Request):
     }
 
 
+@router.get("/accounts/{account_id}")
+async def get_account_credentials(account_id: str, request: Request, response: Response):
+    """Return one account including raw token/cookies.
+
+    The list endpoint only exposes previews, which is not enough for an
+    automated session keeper that has to re-probe the upstream with the real
+    credentials. Admin authentication is required, and the response must not
+    be cached.
+    """
+    _check_auth(request)
+    response.headers["Cache-Control"] = "no-store"
+    acct = get_pool().get_by_id(account_id)
+    if acct is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+    return {
+        "account": {
+            **acct.to_dict(),
+            "token": acct.token,
+            "cookies": acct.cookies,
+            "device_id": acct.device_id,
+        }
+    }
+
+
 @router.post("/accounts")
 async def add_account(req: AccountAddRequest, request: Request):
     _check_auth(request)
@@ -584,10 +644,161 @@ async def add_account(req: AccountAddRequest, request: Request):
             cookies=req.cookies,
             email=req.email or "",
             proxy_id=req.proxy_id or "",
+            device_id=req.device_id or "",
         )
     except Exception as e:
         _pool_error(e)
     return {"ok": True, "account": acct.to_dict()}
+
+
+@router.post("/accounts/import")
+async def import_account(req: CredentialImportRequest, request: Request, response: Response):
+    """Import credentials copied from the DeepSeek browser session.
+
+    Accepts a DevTools HAR or the small JSON object produced by the WebUI's
+    "copy browser export script".  The response never echoes the token or
+    cookie values.
+    """
+    _check_auth(request)
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        imported = parse_credential_payload(req.payload)
+    except CredentialImportError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    pool = get_pool()
+    try:
+        existing = pool.find_by_token(imported.token)
+        if existing is not None:
+            acct = pool.update(
+                existing.id,
+                token=imported.token,
+                cookies=imported.cookies or None,
+                device_id=imported.device_id or None,
+            )
+            action = "updated"
+        else:
+            acct = pool.add(
+                token=imported.token,
+                cookies=imported.cookies,
+                device_id=imported.device_id,
+            )
+            action = "created"
+    except Exception as e:
+        _pool_error(e)
+
+    log.info(
+        "account_credentials_imported",
+        extra={
+            "account_id": acct.id,
+            "action": action,
+            "source": imported.source,
+            "has_device_id": bool(imported.device_id),
+            "cookie_count": len(imported.public_summary()["cookie_names"]),
+        },
+    )
+    return {
+        "ok": True,
+        "action": action,
+        "account": acct.to_dict(),
+        "import": imported.public_summary(),
+    }
+
+
+@router.get("/browser-login/status")
+async def browser_login_status(request: Request):
+    _check_auth(request)
+    if not browser_login_client.enabled():
+        return {"enabled": False, "status": "disabled", "message": "浏览器登录服务未配置"}
+    try:
+        return {"enabled": True, **(await browser_login_client.status())}
+    except browser_login_client.BrowserLoginUnavailable as e:
+        return {"enabled": True, "status": "unavailable", "message": str(e)}
+
+
+@router.post("/browser-login/start")
+async def browser_login_start(req: BrowserLoginStartRequest, request: Request, response: Response):
+    _check_auth(request)
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        result = await browser_login_client.start(reset_profile=req.reset_profile)
+    except browser_login_client.BrowserLoginUnavailable as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    return {"enabled": True, **result}
+
+
+@router.get("/browser-login/view-token")
+async def browser_login_view_token(request: Request, response: Response):
+    _check_auth(request)
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        return {"enabled": True, **(await browser_login_client.view_token())}
+    except browser_login_client.BrowserLoginUnavailable as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+@router.post("/browser-login/stop")
+async def browser_login_stop(request: Request):
+    _check_auth(request)
+    try:
+        return {"enabled": True, **(await browser_login_client.stop())}
+    except browser_login_client.BrowserLoginUnavailable as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+@router.post("/browser-login/ingest")
+async def browser_login_ingest(
+    req: BrowserLoginIngestRequest,
+    request: Request,
+    response: Response,
+):
+    """Internal callback from the browser sidecar.
+
+    Protected by a dedicated shared secret instead of the admin session token,
+    so the sidecar never receives the WebUI administrator credential.
+    """
+    expected = os.environ.get("BROWSER_LOGIN_SHARED_SECRET", "")
+    supplied = request.headers.get("X-Browser-Login-Secret", "")
+    if not expected or not supplied or not secrets.compare_digest(supplied, expected):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    response.headers["Cache-Control"] = "no-store"
+
+    token = req.token.strip()
+    # Older browser-login builds posted the raw localStorage wrapper
+    # (``{"value":"...","__version":"0"}``); normalize it before persisting.
+    token = normalize_token(token)
+    if not token:
+        raise HTTPException(status_code=400, detail="Token is required")
+    pool = get_pool()
+    try:
+        existing = pool.find_by_token(token)
+        if existing is not None:
+            acct = pool.update(
+                existing.id,
+                token=token,
+                cookies=req.cookies or None,
+                device_id=req.device_id or None,
+            )
+            action = "updated"
+        else:
+            acct = pool.add(
+                token=token,
+                cookies=req.cookies,
+                device_id=req.device_id,
+            )
+            action = "created"
+    except Exception as e:
+        _pool_error(e)
+
+    log.info(
+        "browser_login_credentials_ingested",
+        extra={
+            "account_id": acct.id,
+            "action": action,
+            "has_device_id": bool(req.device_id),
+        },
+    )
+    return {"ok": True, "action": action, "account": acct.to_dict()}
 
 
 @router.put("/accounts/{account_id}")
@@ -601,6 +812,7 @@ async def update_account(account_id: str, req: AccountUpdateRequest, request: Re
             cookies=req.cookies,
             email=req.email,
             proxy_id=req.proxy_id,
+            device_id=req.device_id,
         )
     except Exception as e:
         _pool_error(e)

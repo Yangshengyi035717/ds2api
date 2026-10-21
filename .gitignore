@@ -9,6 +9,11 @@ data/accounts.ci.json
 data/api_keys.sqlite3*
 data/runtime_config.json
 data/proxies.json
+keepalive/profile/
+keepalive/data/
+keepalive/_creds_probe.json
+*.har
+data/browser-profile/
 
 # v3 React webui build artefacts (commit source, not built files)
 webui-new/node_modules/

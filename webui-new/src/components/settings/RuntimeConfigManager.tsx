@@ -11,6 +11,13 @@ import {
 } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { useToast } from '@/hooks/use-toast'
 import { get, put } from '@/lib/api'
 import type { RuntimeConfigResponse } from '@/lib/types'
@@ -24,6 +31,15 @@ const SOURCE_LABELS: Record<string, string> = {
 export function RuntimeConfigManager() {
   const [config, setConfig] = useState<RuntimeConfigResponse | null>(null)
   const [modelName, setModelName] = useState('')
+  const [displayName, setDisplayName] = useState('')
+  const [currency, setCurrency] = useState('USD')
+  const [billingMode, setBillingMode] = useState('token')
+  const [inputPrice, setInputPrice] = useState('')
+  const [outputPrice, setOutputPrice] = useState('')
+  const [cacheReadPrice, setCacheReadPrice] = useState('')
+  const [cacheWritePrice, setCacheWritePrice] = useState('')
+  const [perRequestPrice, setPerRequestPrice] = useState('')
+  const [rateMultiplier, setRateMultiplier] = useState('1')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -32,6 +48,15 @@ export function RuntimeConfigManager() {
   const applyConfig = (next: RuntimeConfigResponse) => {
     setConfig(next)
     setModelName(next.model_name)
+    setDisplayName(next.display_name)
+    setCurrency(next.pricing.currency)
+    setBillingMode(next.pricing.billing_mode)
+    setInputPrice(next.pricing.input_price === null ? '' : String(next.pricing.input_price))
+    setOutputPrice(next.pricing.output_price === null ? '' : String(next.pricing.output_price))
+    setCacheReadPrice(next.pricing.cache_read_price === null ? '' : String(next.pricing.cache_read_price))
+    setCacheWritePrice(next.pricing.cache_write_price === null ? '' : String(next.pricing.cache_write_price))
+    setPerRequestPrice(next.pricing.per_request_price === null ? '' : String(next.pricing.per_request_price))
+    setRateMultiplier(String(next.pricing.rate_multiplier))
   }
 
   const load = useCallback(async () => {
@@ -58,28 +83,68 @@ export function RuntimeConfigManager() {
       toast({ title: '模型名称不能为空', variant: 'destructive' })
       return
     }
+    if (!displayName.trim()) {
+      toast({ title: '显示名称不能为空', variant: 'destructive' })
+      return
+    }
+
+    const optionalNumber = (raw: string): number | null => {
+      if (!raw.trim()) return null
+      const parsed = Number(raw)
+      return Number.isFinite(parsed) ? parsed : null
+    }
+    const multiplier = Number(rateMultiplier)
+    if (!Number.isFinite(multiplier) || multiplier < 0) {
+      toast({ title: '倍率必须是大于等于 0 的数字', variant: 'destructive' })
+      return
+    }
 
     setSaving(true)
     setError(null)
     try {
       const next = await put<RuntimeConfigResponse>('/admin/api/runtime-config', {
         model_name: value,
+        display_name: displayName.trim(),
+        pricing: {
+          currency: currency.trim().toUpperCase(),
+          billing_mode: billingMode,
+          input_price: optionalNumber(inputPrice),
+          output_price: optionalNumber(outputPrice),
+          cache_read_price: optionalNumber(cacheReadPrice),
+          cache_write_price: optionalNumber(cacheWritePrice),
+          per_request_price: optionalNumber(perRequestPrice),
+          rate_multiplier: multiplier,
+        },
       })
       applyConfig(next)
       toast({
-        title: '模型名称已更新',
-        description: `之后的 API 响应将使用 ${next.model_name}，无需重启服务。`,
+        title: '模型与定价配置已更新',
+        description: `API 模型名称为 ${next.model_name}，Sub2API 可随后同步。`,
       })
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e)
       setError(message)
-      toast({ title: '保存模型名称失败', description: message, variant: 'destructive' })
+      toast({ title: '保存运行配置失败', description: message, variant: 'destructive' })
     } finally {
       setSaving(false)
     }
   }
 
-  const changed = Boolean(config && modelName.trim() !== config.model_name)
+  const changed = Boolean(
+    config &&
+    (
+      modelName.trim() !== config.model_name ||
+      displayName.trim() !== config.display_name ||
+      currency.trim().toUpperCase() !== config.pricing.currency ||
+      billingMode !== config.pricing.billing_mode ||
+      inputPrice !== (config.pricing.input_price === null ? '' : String(config.pricing.input_price)) ||
+      outputPrice !== (config.pricing.output_price === null ? '' : String(config.pricing.output_price)) ||
+      cacheReadPrice !== (config.pricing.cache_read_price === null ? '' : String(config.pricing.cache_read_price)) ||
+      cacheWritePrice !== (config.pricing.cache_write_price === null ? '' : String(config.pricing.cache_write_price)) ||
+      perRequestPrice !== (config.pricing.per_request_price === null ? '' : String(config.pricing.per_request_price)) ||
+      rateMultiplier !== String(config.pricing.rate_multiplier)
+    )
+  )
 
   return (
     <Card>
@@ -88,10 +153,10 @@ export function RuntimeConfigManager() {
           <div className="space-y-1.5">
             <CardTitle className="flex items-center gap-2 text-base">
               <Sparkles className="h-4 w-4" />
-              模型名称
+              模型与 Sub2API 定价
             </CardTitle>
             <CardDescription>
-              配置 OpenAI / Anthropic 客户端看到的公开模型名；不会切换 DeepSeek 上游模型。
+              配置公开模型名、显示名和供 Sub2API 同步器读取的价格/倍率；最终计费仍由 Sub2API 管理。
             </CardDescription>
           </div>
           {config && (
@@ -108,28 +173,78 @@ export function RuntimeConfigManager() {
           <>
             <div className="space-y-1.5">
               <Label htmlFor="runtime-model-name">公开模型名称</Label>
-              <div className="flex flex-col gap-2 sm:flex-row">
-                <Input
-                  id="runtime-model-name"
-                  value={modelName}
-                  onChange={(event) => setModelName(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' && changed && !saving) void save()
-                  }}
-                  placeholder="deepseek-chat"
-                  maxLength={128}
-                  disabled={saving}
-                />
-                <Button onClick={() => void save()} disabled={saving || !changed || !modelName.trim()}>
-                  <Save className="h-4 w-4" />
-                  {saving ? '保存中…' : '保存并生效'}
-                </Button>
-              </div>
+              <Input
+                id="runtime-model-name"
+                value={modelName}
+                onChange={(event) => setModelName(event.target.value)}
+                placeholder="deepseek-chat"
+                maxLength={128}
+                disabled={saving}
+              />
               <p className="text-[11px] leading-relaxed text-muted-foreground">
                 保存后会写入 <code className="font-mono">data/runtime_config.json</code>，
                 并立即更新 <code className="font-mono">/v1/models</code> 和响应中的 model 字段。
               </p>
             </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="runtime-display-name">模型显示名称</Label>
+              <Input
+                id="runtime-display-name"
+                value={displayName}
+                onChange={(event) => setDisplayName(event.target.value)}
+                placeholder="DeepSeek Chat"
+                maxLength={128}
+                disabled={saving}
+              />
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label>计费模式</Label>
+                <Select value={billingMode} onValueChange={setBillingMode} disabled={saving}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="token">按 Token</SelectItem>
+                    <SelectItem value="per_request">按请求</SelectItem>
+                    <SelectItem value="image">按图片</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="runtime-currency">币种</Label>
+                <Input id="runtime-currency" value={currency} onChange={(event) => setCurrency(event.target.value)} maxLength={3} disabled={saving} />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="runtime-rate-multiplier">账号倍率</Label>
+                <Input id="runtime-rate-multiplier" type="number" min="0" step="0.000001" value={rateMultiplier} onChange={(event) => setRateMultiplier(event.target.value)} disabled={saving} />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="runtime-input-price">输入价格 / 百万 Token</Label>
+                <Input id="runtime-input-price" type="number" min="0" step="0.000001" value={inputPrice} onChange={(event) => setInputPrice(event.target.value)} placeholder="留空" disabled={saving} />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="runtime-output-price">输出价格 / 百万 Token</Label>
+                <Input id="runtime-output-price" type="number" min="0" step="0.000001" value={outputPrice} onChange={(event) => setOutputPrice(event.target.value)} placeholder="留空" disabled={saving} />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="runtime-cache-read-price">缓存读取价格</Label>
+                <Input id="runtime-cache-read-price" type="number" min="0" step="0.000001" value={cacheReadPrice} onChange={(event) => setCacheReadPrice(event.target.value)} placeholder="留空" disabled={saving} />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="runtime-cache-write-price">缓存写入价格</Label>
+                <Input id="runtime-cache-write-price" type="number" min="0" step="0.000001" value={cacheWritePrice} onChange={(event) => setCacheWritePrice(event.target.value)} placeholder="留空" disabled={saving} />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="runtime-request-price">按请求价格</Label>
+                <Input id="runtime-request-price" type="number" min="0" step="0.000001" value={perRequestPrice} onChange={(event) => setPerRequestPrice(event.target.value)} placeholder="留空" disabled={saving} />
+              </div>
+            </div>
+
+            <p className="rounded-md border border-dashed p-3 text-[11px] leading-relaxed text-muted-foreground">
+              价格用于 <code className="font-mono">/v1/provider-manifest</code> 和 Sub2API 同步脚本。
+              Sub2API 的渠道模型价格、账号倍率与分组高峰倍率仍是最终计费依据。
+            </p>
 
             {config && (
               <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
@@ -141,6 +256,11 @@ export function RuntimeConfigManager() {
                 </div>
               </div>
             )}
+
+            <Button onClick={() => void save()} disabled={saving || !changed || !modelName.trim()}>
+              <Save className="h-4 w-4" />
+              {saving ? '保存中…' : '保存并生效'}
+            </Button>
 
             {config?.model_routes_configured && (
               <div className="rounded-md border border-warning/30 bg-warning/5 p-3 text-xs leading-relaxed text-muted-foreground">

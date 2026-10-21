@@ -4,6 +4,13 @@
 
 ## 当前账号配置规则
 
+- WebUI「添加账号」提供两种方式：**浏览器导入**（粘贴 DevTools HAR 或浏览器控制台导出的 `{token,cookies,device_id}`）与**手动填写**。导入接口为 `POST /admin/api/accounts/import`，响应只返回脱敏摘要。
+- 账号现在持久化可选的 `device_id`（浏览器 `x-device-id`）。HAR / 导出脚本会一并提取；缺失时服务端使用自身持久化的 device id。上游存在 `auth_token/check_device`，但“token 是否硬绑定单一设备”尚未实测证明，设备号主要用于保持请求一致性。
+- DeepSeek 密码登录使用 RSA 加密请求体 + 浏览器 IndexedDB 中**不可导出**的 ES256 私钥签名 MFA challenge，服务端无法仅凭账号密码完成登录。不要在服务端保存 DeepSeek 密码。
+- 浏览器退出登录会轮换/吊销旧 token；退出后必须重新从已登录浏览器导出凭据，服务器端协议保活只能维持登录态、不能代替登录。
+- **服务器浏览器登录**（`browser-login/`）：独立 sidecar 运行 Xvfb + Chromium + x11vnc + noVNC。DS2API 通过 `BROWSER_LOGIN_URL` 控制 sidecar，sidecar 用 `BROWSER_LOGIN_SHARED_SECRET` 回调 `/admin/api/browser-login/ingest`；管理员会话 token 不会传给 sidecar。登录成功后读取 `localStorage.userToken`、`deepseek-device-id:chat` 与 Cookie 并导入账号池。
+
+
 - 账号凭证只通过 WebUI 账号池或 `data/accounts.json` 配置；WebUI 的修改会持久化到该 JSON 文件。
 - `.env` 中的 `DEEPSEEK_TOKEN`、`DEEPSEEK_COOKIES`、`DEEPSEEK_EMAIL`、`DEEPSEEK_PROXY` 及编号形式不再读取；池空时不会使用环境变量兜底。
 - 以下版本记录保留当时的实现历史；其中曾描述的 `.env` 账号兜底已经移除。
@@ -210,13 +217,16 @@ D:\the llaa\DS反代 --pre\
 ├── server.py              # FastAPI 服务入口（路由、请求模型、SSE 组装）
 ├── adapter.py             # DeepSeek API 适配器（PoW、会话、SSE 解析）
 ├── anthropic_format.py    # Anthropic /v1/messages 格式转换层
+├── responses_format.py    # OpenAI Responses 与 Chat Completions 转换层
 ├── account_pool.py        # 多账号池管理（CRUD、状态追踪、轮询分配、健康检查）
 ├── proxy_pool.py          # 账号绑定代理池（CRUD、连通性检测、加密持久化）
+├── runtime_config.py      # WebUI 模型、价格与倍率的原子持久化配置
 ├── admin.py               # 管理后台 API（密码认证、请求统计、账号池管理）
 ├── tool_dsml.py           # DSML 格式解析器（工具调用协议）
 ├── tool_sieve.py          # 流式筛分引擎（实时检测工具调用标签）
 ├── sha3_wasm_bg.wasm      # PoW 哈希引擎 WASM 二进制
 ├── start.bat              # Windows 一键启动脚本（自动 venv/依赖/WebUI/开浏览器）
+├── scripts/sync_sub2api.py # Sub2API 账号、模型、渠道价格与倍率同步器
 ├── webui-new/             # 管理面板前端（v3.0.0+，React SPA，需 npm 构建）
 │   └── dist/              #   构建产物（gitignored），server.py 伺服于 /webui/*
 ├── .env                   # 环境配置（含 TOKEN/COOKIE，不提交）
@@ -237,8 +247,10 @@ D:\the llaa\DS反代 --pre\
 | `session_cache.py` | 多轮会话缓存：`conv:<sha256>` 键派生、TTL（默认 1800s）、`delta_prompt()` 前缀比对、`ChatSession.diverged_turns` 计数 | HTTP 路由、上游协议 |
 | `adapter.py` | 与 DeepSeek API 通信、PoW 求解、SSE 流解析、会话创建 | HTTP 路由、OpenAI/Anthropic 格式 |
 | `anthropic_format.py` | Anthropic `/v1/messages` 请求解析、响应组装、SSE 生成 | DeepSeek 协议、HTTP 路由 |
+| `responses_format.py` | OpenAI Responses 输入映射、非流式对象和 SSE 事件转换 | DeepSeek 协议、HTTP 路由 |
 | `account_pool.py` | 多账号 CRUD、状态追踪（idle/busy/error）、轮询分配、健康检查/重登录 | HTTP 路由、DeepSeek 协议 |
 | `proxy_pool.py` | 代理池 CRUD、HTTP/SOCKS 代理校验、连通性检测、Fernet 加密持久化 | 账号选择、HTTP 路由 |
+| `runtime_config.py` | 模型名称、显示名称、价格和倍率的线程安全持久化 | HTTP 路由、上游协议 |
 | `admin.py` | 管理后台 API 端点（密码认证、统计查询、账号池 CRUD、重登录触发） | 前端渲染、DeepSeek 协议 |
 | `tool_dsml.py` | DSML XML 解析与生成、工具提示词构建 | 流式检测、HTTP |
 | `tool_sieve.py` | 流式文本中实时检测 DSML 工具调用标签 | 协议解析、HTTP |
@@ -1503,14 +1515,29 @@ if not had_tool and full_buf:
 | 端点 | 方法 | 功能 | server.py 处理函数 |
 |------|------|------|-------------------|
 | `/health` | GET | 健康检查 | `health()` |
-| `/v1/models` | GET | 模型列表 | `list_models()` |
+| `/v1/models` | GET | 富模型目录（ID、显示名、能力、支持端点） | `list_models()` |
+| `/v1/models/{model}` | GET | 单模型查询；未知模型返回 OpenAI 404 | `retrieve_model()` |
+| `/v1/provider-manifest` | GET | 供外部网关同步器读取的模型/协议能力清单 | `provider_manifest()` |
 | `/v1/chat/completions` | POST | 对话补全 | `chat_completions()` |
+| `/v1/responses` / `/responses` | POST | OpenAI Responses 兼容层（文本、流式、函数工具、思考开关） | `responses()` |
+
+### 10.1.1 上游错误分类
+
+`adapter._raise_hint_error()` 把 SSE `event: hint`（`type=error`）分为三类：
+
+| 条件 | 异常 | 适配器行为 | HTTP |
+|------|------|-----------|------|
+| `finish_reason=rate_limit_reached` 或消息含「频繁」 | `RateLimitError` | 按 `DEEPSEEK_RATE_LIMIT_RETRY_DELAYS` 退避并换会话重试 | 429 |
+| `finish_reason` ∈ {`generation_err`,`server_error`,`internal_error`,`overloaded`,`service_unavailable`} 或消息含「服务器暂时不可用」等 | `UpstreamTransientError`（`UpstreamHintError` 子类） | 同样退避换会话重试；**不**标记账号 error | 503 + `Retry-After` |
+| 其他 hint 错误 | `UpstreamHintError` | 不重试，标记账号 error | 502 |
+
+`UpstreamTransientError` 与 `RateLimitError` 互不继承，`server.py` 必须先于通用 `UpstreamHintError` 捕获它们。流式错误帧携带 `error.type` / `error.code` / `error.retry_after`，便于上级网关识别并切换账号。
 
 ### 10.2 请求模型 (`ChatCompletionRequest`)
 
 ```python
 class ChatCompletionRequest(BaseModel):
-    model: Optional[str] = MODEL_NAME        # 模型名，可自定义（不影响转发）
+    model: Optional[str] = None              # 未传时使用默认路由
     messages: list[ChatMessage]               # 消息列表
     stream: Optional[bool] = False            # 是否流式
     max_tokens: Optional[int] = None          # 当前被忽略（透传无效）
@@ -1520,7 +1547,10 @@ class ChatCompletionRequest(BaseModel):
     tool_choice: Optional[Union[str, dict]] = None  # 工具选择（不可靠）
     thinking_mode: Optional[bool] = False     # 客户端请求的思考模式（被 MODEL_ROUTES/THINKING env 覆盖）
     search_enabled: Optional[bool] = False    # 联网搜索
+    stream_options: Optional[StreamOptions] = None  # include_usage=true 时追加 usage-only SSE 帧
 ```
+
+`/v1/*` 的 HTTP 错误和请求校验错误统一返回 OpenAI `{"error": {...}}` 结构；Admin API 保持原有 `detail` 结构。流式正常结束时 finish chunk 总是携带 `usage`，`stream_options.include_usage=true` 时还会追加一个 `choices=[]` 的 usage-only chunk，便于 Sub2API 等上级网关计费。
 
 **`thinking_mode` 与 MODEL_ROUTES / THINKING / MODE 的关系（v3.3.8）：**
 
@@ -1880,6 +1910,7 @@ class ContentPart(BaseModel):
 | `DEEPSEEK_IMPERSONATE` | `chrome131` | curl_cffi TLS 指纹 profile | |
 | `DEEPSEEK_JITTER_SECS` | `0.4` | 调用前随机 sleep 秒数 | |
 | `DEEPSEEK_RATE_LIMIT_RETRY_DELAYS` | `5,15` | 上游限流退避秒数列，空=禁重试 | |
+| `DEEPSEEK_TRANSIENT_RETRY_AFTER` | `5` | 上游瞬时故障（`generation_err`）返回的 `Retry-After` 秒数 | |
 | `LOG_LEVEL` | `INFO` | DEBUG/INFO/WARNING/ERROR | |
 | `LOG_FORMAT` | `json` | json(生产)/text(开发) | |
 | `ALLOWED_ORIGINS` | `""` | CORS 允许 origin，逗号分隔 | 浏览器客户端 |
@@ -1955,7 +1986,7 @@ MODEL_NAME = os.environ.get("MODEL_NAME", "deepseek-chat")
 
 账号凭证由 `AccountPool` 从 `data/accounts.json` 加载，或通过 WebUI 管理；`adapter.py` 构造时必须显式传入凭证。`adapter.py` 和 `server.py` 仍调用 `load_dotenv()` 读取其他运行配置。
 
-公开模型名的运行时优先级为：`data/runtime_config.json`（WebUI 设置）→ `.env` 的 `MODEL_NAME` → `deepseek-chat`。WebUI 保存后通过 `RuntimeConfigStore` 原子写入，并立即更新 `/v1/models`、OpenAI/Anthropic 响应中的 `model` 字段及统计记录，无需重启。
+公开模型名的运行时优先级为：`data/runtime_config.json`（WebUI 设置）→ `.env` 的 `MODEL_NAME` → `deepseek-chat`。同一文件还保存 `display_name` 与 Sub2API 同步用的 `pricing`（币种、计费模式、输入/输出/缓存/按请求价格、账号倍率）。WebUI 保存后通过 `RuntimeConfigStore` 原子写入，并立即更新 `/v1/models`、OpenAI/Anthropic/Responses 响应中的 `model` 字段、Provider Manifest 及统计记录，无需重启。
 
 ### 14.3 Token 和 Cookie 获取
 
@@ -2230,7 +2261,7 @@ python -m uvicorn server:app --host 127.0.0.1 --port 8080
 - **路由**：`createBrowserRouter(..., { basename: '/webui' })`——SPA 位于 `/webui/*`，深链接刷新由 `server.py` 的 `/webui/{rest}` SPA fallback 回 index.html
 - **构建**：`webui-new/` 下 `npm install && npm run build`（或 `scripts/build.bat`），产物 `webui-new/dist/`。vite `base: '/webui/'` 使资源引用带前缀（改回 `/` 会导致 JS/CSS 404 白屏）
 - **鉴权**：admin token 存 `localStorage`（zustand persist，key `ds2api-auth`）；`api()` 包装器统一带 `Authorization: Bearer <admin-token>`，401 自动 logout 跳 `/login`。`/v1/*` 现也接受该 admin token（见 14.1/18.1）
-- **页面**：登录 / 概览（统计卡 + 请求量/延迟 Recharts 图 + 账号池状态）/ 账号池（表格 + 抽屉详情 + 添加/编辑/删除 + 重登 + 代理绑定）/ 代理池（列表、添加/编辑/删除、连通性检测、绑定账号展示）/ API 文档（OpenAI/Anthropic 接入示例 + `/v1/models`、Chat Completions、Messages 内嵌调试器）/ Playground（流式对话，参数仅暴露后端真实转发的字段，reasoning 折叠显示）/ 设置（模型名称可视化配置、API Key、`/admin/api/env` 只读）/ 404
+- **页面**：登录 / 概览（统计卡 + 请求量/延迟 Recharts 图 + 账号池状态）/ 账号池（表格 + 抽屉详情 + 添加/编辑/删除 + 重登 + 代理绑定）/ 代理池（列表、添加/编辑/删除、连通性检测、绑定账号展示）/ API 文档（OpenAI / Responses / Anthropic / Sub2API 接入示例 + 内嵌调试器）/ Playground（流式对话，参数仅暴露后端真实转发的字段，reasoning 折叠显示）/ 设置（模型名称、显示名称、价格与倍率、API Key、`/admin/api/env` 只读）/ 404
 - **主题**：浅色/深色/跟随系统，`localStorage` 持久化（key `ds2api-theme`），`main.tsx` 挂载前提前 `applyTheme` 防闪烁
 - **轮询**：概览页 stats 5s / accounts 10s / history 30s，账号页 10s（`useApi` hook 带 AbortController + reqId 防竞态）
 

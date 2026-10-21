@@ -86,6 +86,7 @@ class Account:
     token: str
     cookies: str
     email: str = ""
+    device_id: str = ""         # browser device that owns the token (optional)
     id: str = field(default_factory=_account_id)
     source: str = "file"       # persisted account
     proxy: str = ""             # legacy/manual direct proxy URL (optional)
@@ -110,6 +111,7 @@ class Account:
                 token=self.token,
                 cookies=self.cookies,
                 proxy=proxy_url or None,
+                device_id=self.device_id,
             )
         return self._adapter
 
@@ -132,6 +134,8 @@ class Account:
             "updated_at": self.updated_at,
             "token_preview": _mask_secret(self.token),
             "cookies_preview": _cookie_names(self.cookies),
+            "device_id_preview": _mask_secret(self.device_id, 8, 4),
+            "has_device_id": bool(self.device_id),
             "credential_fingerprint": self.fingerprint[:12],
             "proxy_id": self.proxy_id,
             "proxy_label": proxy_entry.label if proxy_entry else "",
@@ -145,6 +149,7 @@ class Account:
             "email": self.email,
             "token": self.token,
             "cookies": self.cookies,
+            "device_id": self.device_id,
             "proxy": self.proxy,
             "proxy_id": self.proxy_id,
             "created_at": self.created_at,
@@ -213,7 +218,7 @@ class AccountPool:
             item = decrypt_account_dict(item) if version == STORE_VERSION_ENCRYPTED else item
             token = str(item.get("token") or "").strip()
             cookies = str(item.get("cookies") or "").strip()
-            if not token or not cookies:
+            if not token:
                 log.warning("skipping_account_missing_credentials", extra={"id": item.get("id")})
                 continue
             created_at = int(item.get("created_at") or _now())
@@ -223,6 +228,7 @@ class AccountPool:
                 email=str(item.get("email") or ""),
                 token=token,
                 cookies=cookies,
+                device_id=str(item.get("device_id") or "").strip(),
                 proxy=str(item.get("proxy") or "").strip(),
                 proxy_id=str(item.get("proxy_id") or "").strip(),
                 source="file",
@@ -276,12 +282,14 @@ class AccountPool:
         cookies: str,
         email: str = "",
         proxy_id: str = "",
+        device_id: str = "",
     ) -> Account:
         token = (token or "").strip()
         cookies = (cookies or "").strip()
         email = (email or "").strip()
-        if not token or not cookies:
-            raise ValueError("Token and cookies are required")
+        device_id = (device_id or "").strip()
+        if not token:
+            raise ValueError("Token is required")
 
         with self._lock:
             fp = _credential_fingerprint(token, cookies)
@@ -296,6 +304,7 @@ class AccountPool:
                 token=token,
                 cookies=cookies,
                 email=email,
+                device_id=device_id,
                 source="file",
                 proxy_id=proxy_id,
                 created_at=now,
@@ -309,9 +318,18 @@ class AccountPool:
         with self._lock:
             return next((a for a in self._accounts if a.id == account_id), None)
 
+    def find_by_token(self, token: str) -> Optional[Account]:
+        """Find an account by its bare token (used by credential re-import)."""
+        value = (token or "").strip()
+        if not value:
+            return None
+        with self._lock:
+            return next((a for a in self._accounts if a.token == value), None)
+
     def update(self, account_id: str, token: str | None = None,
                cookies: str | None = None, email: str | None = None,
-               proxy_id: str | None = None) -> Account:
+               proxy_id: str | None = None,
+               device_id: str | None = None) -> Account:
         with self._lock:
             acct = next((a for a in self._accounts if a.id == account_id), None)
             if acct is None:
@@ -319,23 +337,31 @@ class AccountPool:
             new_token = acct.token if token is None or token == "" else token.strip()
             new_cookies = acct.cookies if cookies is None or cookies == "" else cookies.strip()
             new_email = acct.email if email is None else email.strip()
+            new_device_id = (
+                acct.device_id if device_id is None else device_id.strip()
+            )
             new_proxy_id = (
                 acct.proxy_id
                 if proxy_id is None
                 else self._validate_proxy_binding_locked(proxy_id, ignore_account_id=account_id)
             )
-            if not new_token or not new_cookies:
-                raise ValueError("Token and cookies cannot be empty")
+            if not new_token:
+                raise ValueError("Token cannot be empty")
 
             new_fp = _credential_fingerprint(new_token, new_cookies)
             if any(a.id != account_id and a.fingerprint == new_fp for a in self._accounts):
                 raise ValueError("Account already exists")
 
-            credentials_changed = new_token != acct.token or new_cookies != acct.cookies
+            credentials_changed = (
+                new_token != acct.token
+                or new_cookies != acct.cookies
+                or new_device_id != acct.device_id
+            )
             proxy_changed = new_proxy_id != acct.proxy_id
             acct.token = new_token
             acct.cookies = new_cookies
             acct.email = new_email or acct.email
+            acct.device_id = new_device_id
             acct.proxy_id = new_proxy_id
             acct.updated_at = _now()
             if credentials_changed or proxy_changed:

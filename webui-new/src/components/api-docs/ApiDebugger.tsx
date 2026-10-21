@@ -35,7 +35,7 @@ import { consumeSse } from '@/lib/sse'
 import { formatLatency } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth'
 
-type DebugEndpoint = 'models' | 'chat' | 'messages'
+type DebugEndpoint = 'models' | 'chat' | 'responses' | 'messages'
 type JsonObject = Record<string, unknown>
 
 interface DebugResult {
@@ -73,6 +73,11 @@ const ENDPOINTS: Record<
     label: 'POST /v1/chat/completions',
     method: 'POST',
     path: '/v1/chat/completions',
+  },
+  responses: {
+    label: 'POST /v1/responses',
+    method: 'POST',
+    path: '/v1/responses',
   },
   messages: { label: 'POST /v1/messages', method: 'POST', path: '/v1/messages' },
 }
@@ -128,6 +133,28 @@ function extractStreamPayload(payload: unknown): StreamExtraction {
   }
 
   const type = asString(root.type)
+  if (type === 'response.output_text.delta') {
+    return {
+      content: asString(root.delta),
+      reasoning: '',
+      finishReason: '',
+    }
+  }
+  if (type === 'response.completed') {
+    return {
+      content: '',
+      reasoning: '',
+      finishReason: asString(asObject(root.response)?.status),
+    }
+  }
+  if (type === 'error') {
+    return {
+      content: '',
+      reasoning: '',
+      finishReason: 'error',
+    }
+  }
+
   const eventDelta = asObject(root.delta)
   if (type === 'content_block_delta') {
     const deltaType = asString(eventDelta?.type)
@@ -181,6 +208,36 @@ function extractNonstream(
       content: asString(message?.content),
       reasoning: asString(message?.reasoning_content),
       finishReason: asString(choice?.finish_reason),
+    }
+  }
+
+  if (endpoint === 'responses') {
+    let content = ''
+    let reasoning = ''
+    for (const rawItem of asArray(root.output)) {
+      const item = asObject(rawItem)
+      const itemType = asString(item?.type)
+      if (itemType === 'message') {
+        for (const rawBlock of asArray(item?.content)) {
+          const block = asObject(rawBlock)
+          if (asString(block?.type) === 'output_text') {
+            content += asString(block?.text)
+          }
+        }
+      }
+      if (itemType === 'reasoning') {
+        for (const rawSummary of asArray(item?.summary)) {
+          reasoning += asString(asObject(rawSummary)?.text)
+        }
+      }
+      if (itemType === 'function_call') {
+        content += `[function_call] ${asString(item?.name)} ${asString(item?.arguments)}`
+      }
+    }
+    return {
+      content,
+      reasoning,
+      finishReason: asString(root.status),
     }
   }
 
@@ -243,6 +300,17 @@ export function ApiDebugger({ defaultModel = 'deepseek-chat' }: ApiDebuggerProps
         stream,
         thinking_mode: thinking,
         search_enabled: search,
+      }
+    }
+
+    if (endpoint === 'responses') {
+      return {
+        model,
+        ...(systemPrompt.trim() ? { instructions: systemPrompt.trim() } : {}),
+        input: userPrompt.trim(),
+        stream,
+        ...(thinking ? { reasoning: { effort: 'high' } } : {}),
+        ...(search ? { tools: [{ type: 'web_search' }] } : {}),
       }
     }
 
@@ -535,7 +603,7 @@ export function ApiDebugger({ defaultModel = 'deepseek-chat' }: ApiDebuggerProps
                 <span>思考模式</span>
                 <Switch checked={thinking} onCheckedChange={setThinking} disabled={busy} />
               </label>
-              {endpoint === 'chat' ? (
+              {endpoint === 'chat' || endpoint === 'responses' ? (
                 <label className="flex items-center justify-between gap-3 text-sm">
                   <span>联网搜索</span>
                   <Switch checked={search} onCheckedChange={setSearch} disabled={busy} />

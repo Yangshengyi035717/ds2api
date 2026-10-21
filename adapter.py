@@ -14,6 +14,7 @@ import time
 import struct
 import base64
 import random
+import re
 import threading
 import datetime
 from pathlib import Path
@@ -49,6 +50,27 @@ try:
 except ValueError:
     RATE_LIMIT_RETRY_DELAYS = []
 
+#: Upstream ``hint`` finish_reasons that mean "the server is temporarily
+#: unavailable", not "you are being throttled". They are retried on a fresh
+#: session and surface as 503 so an upstream gateway can fail over.
+_TRANSIENT_HINT_REASONS = frozenset({
+    "generation_err",
+    "server_error",
+    "internal_error",
+    "overloaded",
+    "service_unavailable",
+})
+
+#: Message fragments (Chinese or English) identifying the same transient
+#: state when the upstream omits a recognisable ``finish_reason``.
+_TRANSIENT_HINT_MARKERS = (
+    "服务器暂时不可用",
+    "服务暂时不可用",
+    "服务器繁忙",
+    "temporarily unavailable",
+    "service unavailable",
+)
+
 _WASM_PATH = Path(__file__).resolve().parent / "sha3_wasm_bg.wasm"
 with open(_WASM_PATH, "rb") as f:
     _WASM_BYTES = f.read()
@@ -78,10 +100,33 @@ class UpstreamEmptyError(RuntimeError):
     """
 
 
+def _impersonate_version(impersonate: str) -> str:
+    """Extract the browser major version from a curl_cffi profile name.
+
+    ``"chrome150"`` -> ``"150"``; ``"chrome131_android"`` -> ``"131"``;
+    anything unrecognised falls back to the newest profile we know about so
+    the UA never claims a version the TLS layer cannot back up.
+    """
+    match = re.search(r"(\d{2,3})", impersonate or "")
+    return match.group(1) if match else "150"
+
+
 class UpstreamHintError(RuntimeError):
     """Raised when the upstream signals an error via an SSE ``hint`` event
     (``type=error``) instead of an HTTP error — e.g. rate limiting. The
     adapter previously ignored these, surfacing them as empty content.
+    """
+
+
+class UpstreamTransientError(UpstreamHintError):
+    """A transient upstream-side failure signalled through an SSE ``hint``
+    event (e.g. ``finish_reason=generation_err`` with the message
+    '服务器暂时不可用').
+
+    Unlike rate limiting this is not caused by the caller, and unlike a
+    credential problem it heals by itself. The adapter retries it on a
+    fresh session; the server maps it to 503 + Retry-After so a parent
+    gateway (Sub2API et al.) can fail over instead of hard-failing.
     """
 
 
@@ -258,28 +303,38 @@ class _WASMSolver:
 class DeepSeekAdapter:
     """Adapter for DeepSeek Chat API"""
 
-    # Captured 2026-06-19 from a live Chrome 149 session on chat.deepseek.com.
-    # We DOWNGRADE the UA string to Chrome 131 to match what curl_cffi's
-    # `chrome131` impersonation profile actually negotiates at the TLS layer:
-    # the JA3/JA4 fingerprint comes from a Chrome 131 build, so a Chrome 149
-    # UA on a Chrome 131 ClientHello is itself a fingerprint mismatch. Bump
-    # both together when curl_cffi adds newer chrome profiles.
+    # The UA/Sec-CH-UA pair MUST match the impersonate profile's browser
+    # version: curl_cffi negotiates the TLS/JA3 fingerprint from that profile,
+    # so a UA claiming a newer Chrome than the ClientHello is itself a
+    # mismatch signal. Derive both from IMPERSONATE below.
+    #
+    # HAR 2026-10-21 shows the live site on Chrome 155 / X-Client-Version
+    # 2.5.0. curl_cffi tops out at chrome150, so we advertise the closest
+    # profile we can actually negotiate instead of an unverifiable 155.
     _DEFAULT_UA = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/131.0.0.0 Safari/537.36"
+        "Chrome/{version}.0.0.0 Safari/537.36"
     )
     _DEFAULT_SEC_CH_UA = (
-        '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"'
+        '"Google Chrome";v="{version}", "Chromium";v="{version}", '
+        '"Not(A:Brand";v="24"'
     )
 
     def __init__(self, token: str, cookies: str,
-                 impersonate: str = IMPERSONATE, proxy: str | None = None):
+                 impersonate: str = IMPERSONATE, proxy: str | None = None,
+                 device_id: str = ""):
         self.token = self._normalize_token(token)
         self.cookies = cookies
+        self.device_id = (device_id or "").strip()
         self.impersonate = impersonate
         self.proxy = proxy
         self._solver = None
+        # Keep the header fingerprint consistent with the negotiated TLS
+        # profile (e.g. "chrome150" -> Chrome/150 + Sec-CH-UA v="150").
+        browser_version = _impersonate_version(impersonate)
+        self._ua = self._DEFAULT_UA.format(version=browser_version)
+        self._sec_ch_ua = self._DEFAULT_SEC_CH_UA.format(version=browser_version)
         # curl_cffi.Session keeps a cookie jar that auto-merges Set-Cookie,
         # so cf_clearance / AWS WAF tokens stay fresh across calls.
         self._client = cffi_requests.Session(
@@ -312,7 +367,7 @@ class DeepSeekAdapter:
         # Header set captured from a live browser fetch().
         # Names use the same casing the real browser sends.
         self._base_headers = {
-            "User-Agent": self._DEFAULT_UA,
+            "User-Agent": self._ua,
             "Accept": "*/*",
             "Accept-Encoding": "gzip, deflate, br, zstd",
             "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
@@ -321,21 +376,24 @@ class DeepSeekAdapter:
             "Origin": BASE_URL,
             "Referer": f"{BASE_URL}/",
             "Priority": "u=1, i",
-            "Sec-Ch-Ua": self._DEFAULT_SEC_CH_UA,
+            "Sec-Ch-Ua": self._sec_ch_ua,
             "Sec-Ch-Ua-Mobile": "?0",
             "Sec-Ch-Ua-Platform": '"Windows"',
             "Sec-Fetch-Dest": "empty",
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Site": "same-origin",
-            # DeepSeek-specific application headers (current as of 2026-08-02).
-            # x-client-version tracks the browser release; X-App-Version is no
-            # longer sent by the real frontend and was dropped.
-            "X-Client-Version": "2.3.0",
+            # DeepSeek-specific application headers. HAR 2026-10-21 shows the
+            # frontend on X-Client-Version 2.5.0 (was 2.3.0). X-App-Version is
+            # no longer sent by the real frontend.
+            "X-Client-Version": os.environ.get("DEEPSEEK_CLIENT_VERSION", "2.5.0"),
             "X-Client-Platform": "web",
             "X-Client-Locale": "zh_CN",
             "X-Client-Timezone-Offset": "28800",
             "x-client-bundle-id": "com.deepseek.chat",
         }
+        if self.device_id:
+            self._base_headers["x-device-id"] = self.device_id
+            self._base_headers["x-device-model"] = ""
 
     @staticmethod
     def _normalize_token(token: str) -> str:
@@ -510,6 +568,12 @@ class DeepSeekAdapter:
     def _raise_hint_error(content: str, finish_reason: str):
         if finish_reason == "rate_limit_reached" or "频繁" in (content or ""):
             raise RateLimitError(content or "rate limited", finish_reason)
+        if finish_reason in _TRANSIENT_HINT_REASONS or any(
+            marker in (content or "") for marker in _TRANSIENT_HINT_MARKERS
+        ):
+            raise UpstreamTransientError(
+                f"upstream_hint_error: {content or ''} ({finish_reason})"
+            )
         raise UpstreamHintError(
             f"upstream_hint_error: {content or ''} ({finish_reason})"
         )
@@ -613,6 +677,20 @@ class DeepSeekAdapter:
                 session_id = self.create_session()
                 # Fresh session: no parent id from the stale session may be
                 # re-sent, or the upstream replies empty again.
+                parent_message_id = None
+            except UpstreamTransientError as e:
+                # Upstream-side outage ('服务器暂时不可用' / generation_err).
+                # Not the caller's fault and not a credential problem: retry
+                # on a fresh session instead of failing the request.
+                idx = attempt - 1
+                if idx >= len(RATE_LIMIT_RETRY_DELAYS):
+                    raise
+                delay = RATE_LIMIT_RETRY_DELAYS[idx]
+                log.warning("upstream_transient_retry_nonstream",
+                            extra={"attempt": attempt, "delay": delay,
+                                   "error": str(e)[:160]})
+                time.sleep(delay)
+                session_id = self.create_session()
                 parent_message_id = None
             except UpstreamEmptyError:
                 if attempt > 1:
@@ -812,6 +890,15 @@ class DeepSeekAdapter:
                 delay = RATE_LIMIT_RETRY_DELAYS[idx]
                 log.warning("upstream_rate_limit_retry_stream",
                             extra={"attempt": attempt, "delay": delay})
+                time.sleep(delay)
+            except UpstreamTransientError as e:
+                idx = attempt - 1
+                if idx >= len(RATE_LIMIT_RETRY_DELAYS):
+                    raise
+                delay = RATE_LIMIT_RETRY_DELAYS[idx]
+                log.warning("upstream_transient_retry_stream",
+                            extra={"attempt": attempt, "delay": delay,
+                                   "error": str(e)[:160]})
                 time.sleep(delay)
             except UpstreamEmptyError:
                 if attempt > 1:

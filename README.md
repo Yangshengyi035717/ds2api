@@ -11,6 +11,7 @@
 ## 功能特性
 
 - **OpenAI 兼容** — `/v1/chat/completions` 与 `/v1/models` 接口，支持 `stream` 模式
+- **Responses 兼容** — `/v1/responses` / `/responses`，支持流式文本、函数工具和思考开关
 - **Anthropic 兼容** — `/v1/messages` 接口，支持 Claude API 格式
 - **API Key 鉴权** — `/v1/*` 支持 `Authorization: Bearer` / `x-api-key`，适合公网部署
 - **思维链（Reasoning/Thinking）** — 开启 `thinking_mode` 后自动分离思维链 tokens 并通过 `reasoning_content` 字段输出
@@ -22,11 +23,62 @@
 - **PoW 鉴权** — 自动完成 WASM 工作量证明（DeepSeekHashV1）挑战
 - **会话管理** — 自动创建和管理 DeepSeek Chat 会话；可选多轮会话复用
 - **多账号池** — 轮询分配、idle/busy/error 状态、健康检查、自动恢复
+- **代理池** — 一号一代理、出口绑定、连通性检测与加密存储
+- **Sub2API 上游适配** — 富模型目录、Provider Manifest、价格/倍率配置和同步脚本
 - **客户端限流** — 滑动窗口，按 API key 和 IP 独立计数；响应头 `X-RateLimit-*`
 - **使用量统计** — 基于 tiktoken 估算的 prompt / completion / total tokens
 - **管理面板** — 内置 Web 管理界面，支持请求统计、账号池管理（多账号轮询/持久化增删改查/重登录）
 
 ---
+
+## 添加 DeepSeek 账号（浏览器导入）
+
+DeepSeek 的密码登录不是普通 HTTP 表单：登录请求体经 RSA-OAEP 包装的 AES-CBC 加密，MFA challenge 由浏览器 IndexedDB 中**不可导出**的 ES256 私钥签名。因此服务端不能仅凭账号密码自动登录，也不应保存 DeepSeek 密码。
+
+推荐流程（WebUI → 账号池 → 添加账号 → 浏览器导入）：
+
+1. 在浏览器正常登录 `https://chat.deepseek.com`。
+2. 打开 DevTools → Console，运行页面提供的“浏览器导出脚本”，脚本会复制如下 JSON：
+
+   ```json
+   {"token": "...", "cookies": {"ds_session_id": "..."}, "device_id": "..."}
+   ```
+
+3. 粘贴到 WebUI 的导入框并保存。也可以直接粘贴 DevTools 导出的整份 HAR；服务端会从 `mfa/verify_signature` 响应中提取 token，并尽量提取 Cookie 与 `x-device-id`。
+4. 导入接口为 `POST /admin/api/accounts/import`，响应只返回脱敏摘要，不包含 token/cookie 明文。
+
+注意：浏览器退出登录会吊销/轮换旧 token；退出后服务器保存的旧凭据会立即失效，需要重新从已登录浏览器导出。协议保活只能维持现有登录态，不能代替登录。
+
+### 服务器浏览器登录（noVNC）
+
+如果不想手动导出，可启用 `browser-login` sidecar。WebUI 的「浏览器登录」
+菜单会启动服务器上的 Chromium，并通过 noVNC 把画面嵌入页面：
+
+```env
+BROWSER_LOGIN_SHARED_SECRET=<random-secret>
+```
+
+```bash
+docker compose up -d --build
+```
+
+然后按 `deploy/README.md` 安装 `nginx-browser-login.lua`、共享密钥文件和
+`nginx-browser-login.conf`（宝塔 Nginx 未编译 `auth_request`，改用
+`ngx_lua` 本地校验 HMAC），并确保存在 `$connection_upgrade` map。
+浏览器登录完成后，服务端会直接读取 `localStorage.userToken`、
+`deepseek-device-id:chat` 和 Cookie，并调用内部 ingest 接口写入账号池。
+之后的保活仍由 `keepalive/` 负责。
+
+如果服务器机房 IP 被上游 CDN 拦截（页面显示 `403 Request blocked`），
+在 `.env` 设置浏览器出口代理后重启 sidecar：
+
+```env
+BROWSER_LOGIN_PROXY=http://user:pass@host:port
+```
+
+```bash
+docker compose up -d --force-recreate browser-login
+```
 
 ## 快速开始
 
@@ -220,6 +272,48 @@ WebUI「代理池」支持 HTTP / HTTPS / SOCKS4 / SOCKS5 / SOCKS5H 代理：
 
 ---
 
+## Sub2API 上游接入
+
+推荐将 DS2API 作为 Sub2API 的 `DeepSeek / API Key` 上游：
+
+```json
+{
+  "platform": "deepseek",
+  "type": "apikey",
+  "credentials": {
+    "api_key": "<DS2API 客户端 API Key>",
+    "base_url": "https://ds2api.example.com",
+    "account_mode": "payg",
+    "api_protocol": "chat_completions",
+    "model_mapping": {
+      "deepseek-chat": "<DS2API 当前公开模型名>"
+    }
+  }
+}
+```
+
+- `base_url` 填写站点根地址，Sub2API 会追加 `/v1/models` 与 `/v1/chat/completions`
+- 使用 `type=apikey` 才能正常使用 Sub2API 的“同步上游模型”
+- 推荐 `api_protocol=chat_completions`；Codex/Responses 客户端可改为 `responses`，DS2API 同时提供 `/v1/responses` 与 `/responses`
+- 自定义模型名必须写入 `model_mapping`，否则可能被 DeepSeek 官方模型白名单拦截
+- 账号倍率、渠道模型价格和分组高峰倍率仍由 Sub2API 本地配置，不从 DS2API 自动读取
+- Sub2API 与 DS2API 分机部署时需要 HTTPS 域名或正确配置内网 URL 白名单
+
+配置完成后可运行同步器：
+
+```powershell
+$env:DS2API_KEY = "<DS2API API Key>"
+$env:SUB2API_ADMIN_TOKEN = "<Sub2API 管理员 Token>"
+.\.venv\Scripts\python.exe scripts\sync_sub2api.py `
+  --sub2api-url http://127.0.0.1:18080 `
+  --group-id 1 `
+  --apply
+```
+
+省略 `--apply` 时只打印账号与渠道载荷，不写入 Sub2API。
+
+---
+
 ## API 文档
 
 ### `POST /v1/chat/completions`
@@ -256,9 +350,19 @@ OpenAI 兼容的聊天补全接口。
 | `max_tokens` | `int` | `null` | 最大生成 tokens |
 | `thinking_mode` | `boolean` | `false` | 开启深度推理（上游 `thinking_enabled`，即原「专家模式」） |
 | `search_enabled` | `boolean` | `false` | 开启联网搜索增强 |
+| `stream_options` | `object` | `null` | 支持 `{"include_usage":true}`；流式末尾追加 usage-only 帧 |
 | `user` | `string` | `null` | 多轮会话标识（与 `X-Conversation-Id` 二选一，见「多轮对话」） |
 | `tools` | `array` | `null` | OpenAI 格式的工具定义 |
 | `tool_choice` | `string\|dict` | `null` | 工具选择策略 |
+
+### 模型与能力发现
+
+- `GET /v1/models`：返回模型 ID、显示名、`owned_by=ds2api`、思考能力、输入模态和支持端点
+- `GET /v1/models/{model}`：单模型查询
+- `GET /v1/provider-manifest`：供 Sub2API 等外部网关同步账号/渠道的模型与协议能力清单
+- `POST /v1/responses` / `POST /responses`：Responses API 兼容入口，支持流式、文本、函数工具和思考开关
+
+`/v1/*` 错误统一使用 OpenAI `{"error":{"message","type","code"}}` 结构。流式 finish chunk 包含 `usage`；请求 `stream_options.include_usage=true` 时还会追加 `choices=[]` 的 usage-only chunk。
 
 #### 非流式响应（`stream: false`）
 
@@ -724,14 +828,16 @@ Retry-After: 47
 ├── server.py            # FastAPI 服务器主入口
 ├── adapter.py           # DeepSeek 协议适配器 (PoW, 会话, SSE)
 ├── anthropic_format.py  # Anthropic /v1/messages 格式转换
+├── responses_format.py  # OpenAI Responses 格式转换
 ├── tool_sieve.py        # StreamSieve 流式工具调用检测引擎
 ├── tool_dsml.py         # DSML 解析器/生成器
 ├── account_pool.py      # 多账号池管理 (轮询、状态追踪、健康检查)
+├── proxy_pool.py        # 代理池与账号出口绑定
+├── runtime_config.py    # 模型与定价可视化配置
 ├── admin.py             # 管理后台 API 端点
-├── webui/               # 管理面板前端 (纯静态 SPA)
-│   ├── index.html
-│   ├── app.js
-│   └── style.css
+├── webui-new/           # React 管理面板源码
+├── scripts/
+│   └── sync_sub2api.py  # Sub2API 同步器
 ├── sha3_wasm_bg.wasm    # WASM PoW 求解器
 ├── requirements.txt     # Python 依赖
 ├── .env.example         # 环境变量模板
@@ -903,6 +1009,7 @@ DeepSeek 的 Token 有效期不明确。如果遇到 `401` 或 `403` 响应，�
 | `LOG_FORMAT` | `json` | `json`（生产）或 `text`（开发） |
 | `DEEPSEEK_IMPERSONATE` | `chrome131` | curl_cffi TLS 指纹 profile |
 | `DEEPSEEK_JITTER_SECS` | `0.0` | 调用间随机抖动（秒） |
+| `DEEPSEEK_TRANSIENT_RETRY_AFTER` | `5` | 上游瞬时故障（`generation_err` / 「服务器暂时不可用」）返回的 `Retry-After` 秒数 |
 | `DSML_MAX_BUFFER_BYTES` | `1048576` | StreamSieve 捕获缓冲上限 |
 | `DISABLE_AUTO_RECOVER` | `false` | 设为 true 禁用账号自动恢复 |
 

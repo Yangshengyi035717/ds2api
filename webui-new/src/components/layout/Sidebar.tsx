@@ -5,6 +5,7 @@ import {
   ChevronsLeft,
   ChevronsRight,
   FlaskConical,
+  LogIn,
   Network,
   Settings,
   Users,
@@ -23,6 +24,7 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { to: '/', label: '概览', icon: Activity, end: true },
   { to: '/accounts', label: '账号池', icon: Users },
+  { to: '/browser-login', label: '浏览器登录', icon: LogIn },
   { to: '/proxies', label: '代理池', icon: Network },
   { to: '/api-docs', label: 'API 文档', icon: BookOpenText },
   { to: '/playground', label: 'Playground', icon: FlaskConical },

@@ -101,8 +101,19 @@ def test_account_adapter_uses_bound_proxy(monkeypatch, tmp_path):
     captured: dict[str, str | None] = {}
 
     class FakeAdapter:
-        def __init__(self, token: str, cookies: str, proxy: str | None = None):
-            captured.update(token=token, cookies=cookies, proxy=proxy)
+        def __init__(
+            self,
+            token: str,
+            cookies: str,
+            proxy: str | None = None,
+            device_id: str = "",
+        ):
+            captured.update(
+                token=token,
+                cookies=cookies,
+                proxy=proxy,
+                device_id=device_id,
+            )
 
     monkeypatch.setattr(account_pool_module, "DeepSeekAdapter", FakeAdapter)
     account = account_pool_module.Account(

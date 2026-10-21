@@ -39,6 +39,8 @@ export interface Account {
   updated_at: number
   token_preview: string
   cookies_preview: string
+  device_id_preview: string
+  has_device_id: boolean
   credential_fingerprint: string
   proxy_id: string
   proxy_label: string
@@ -81,6 +83,34 @@ export interface ReloginResponse {
   message: string
 }
 
+export interface CredentialImportSummary {
+  source: string
+  has_token: boolean
+  token_length: number
+  cookie_names: string[]
+  has_device_id: boolean
+  device_id_preview: string
+  warnings: string[]
+}
+
+export interface CredentialImportResponse {
+  ok: boolean
+  action: 'created' | 'updated' | string
+  account: Account
+  import: CredentialImportSummary
+}
+
+export interface BrowserLoginStatus {
+  enabled: boolean
+  status: 'idle' | 'starting' | 'waiting_login' | 'importing' | 'completed' | 'stopped' | 'error' | 'disabled' | 'unavailable' | string
+  message: string
+  started_at?: number
+  completed_at?: number
+  account_id?: string
+  view_token?: string
+  view_expires_at?: number
+}
+
 export interface ModelInfo {
   id: string
   object?: string
@@ -95,6 +125,17 @@ export interface ModelsResponse {
 
 export interface RuntimeConfigResponse {
   model_name: string
+  display_name: string
+  pricing: {
+    currency: string
+    billing_mode: 'token' | 'per_request' | 'image' | string
+    input_price: number | null
+    output_price: number | null
+    cache_read_price: number | null
+    cache_write_price: number | null
+    per_request_price: number | null
+    rate_multiplier: number
+  }
   source: 'webui' | 'env' | 'default' | string
   persisted: boolean
   default_model_name: string

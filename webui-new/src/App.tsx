@@ -8,6 +8,7 @@ import ApiDocsPage from '@/pages/ApiDocsPage'
 import ProxyPoolPage from '@/pages/ProxyPoolPage'
 import PlaygroundPage from '@/pages/PlaygroundPage'
 import SettingsPage from '@/pages/SettingsPage'
+import BrowserLoginPage from '@/pages/BrowserLoginPage'
 import NotFoundPage from '@/pages/NotFoundPage'
 
 /** Wrapper that redirects to /login if there's no token. */
@@ -33,6 +34,7 @@ const router = createBrowserRouter([
           { index: true, element: <DashboardPage /> },
           { path: 'accounts', element: <AccountsPage /> },
           { path: 'accounts/:id', element: <AccountsPage /> },
+          { path: 'browser-login', element: <BrowserLoginPage /> },
           { path: 'proxies', element: <ProxyPoolPage /> },
           { path: 'api-docs', element: <ApiDocsPage /> },
           { path: 'playground', element: <PlaygroundPage /> },

@@ -20,6 +20,7 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
   const [email, setEmail] = useState(account?.email ?? '')
   const [token, setToken] = useState('')
   const [cookies, setCookies] = useState('')
+  const [deviceId, setDeviceId] = useState('')
   const [proxyId, setProxyId] = useState(account?.proxy_id ?? '')
   const [proxies, setProxies] = useState<ProxyConfig[]>([])
   const [busy, setBusy] = useState(false)
@@ -48,14 +49,15 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
         const body: Record<string, string> = { email, proxy_id: proxyId }
         if (token) body.token = token
         if (cookies) body.cookies = cookies
+        if (deviceId) body.device_id = deviceId
         await put(`/admin/api/accounts/${encodeURIComponent(account.id)}`, body)
         toast({ title: '账号已保存', variant: 'success' })
         // Refetch the account to get the fresh data.
         const saved: Account = { ...account, email: email || account.email }
         onSaved(saved)
       } else {
-        if (!token || !cookies) {
-          toast({ title: 'Token 和 Cookies 不能为空', variant: 'destructive' })
+        if (!token) {
+          toast({ title: 'Token 不能为空', variant: 'destructive' })
           setBusy(false)
           return
         }
@@ -64,12 +66,14 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
           cookies,
           email: email || '',
           proxy_id: proxyId,
+          device_id: deviceId,
         })
         toast({ title: '账号添加成功', variant: 'success' })
         onSaved(res.account)
         setEmail('')
         setToken('')
         setCookies('')
+        setDeviceId('')
         setProxyId('')
       }
     } catch (e) {
@@ -113,6 +117,24 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
           autoComplete="off"
           className="font-mono text-xs"
         />
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="acct-device-id">Device ID（可选）</Label>
+        <Input
+          id="acct-device-id"
+          value={deviceId}
+          onChange={(e) => setDeviceId(e.target.value)}
+          placeholder={
+            isEdit
+              ? `留空则不修改${account?.device_id_preview ? `（当前 ${account.device_id_preview}）` : ''}`
+              : '登录浏览器的 x-device-id'
+          }
+          autoComplete="off"
+          className="font-mono text-xs"
+        />
+        <p className="text-[11px] text-muted-foreground">
+          登录 token 与浏览器设备绑定。通过 HAR / 浏览器导出导入时会自动带上。
+        </p>
       </div>
       <div className="space-y-1.5">
         <Label>出口代理</Label>

@@ -11,6 +11,7 @@
 ## Features
 
 - **OpenAI-compatible** — `/v1/chat/completions` and `/v1/models` endpoints, supports `stream` mode.
+- **Responses-compatible** — `/v1/responses` / `/responses` with streaming text, function tools, and thinking switches.
 - **Anthropic-compatible** — `/v1/messages` endpoint, supports Claude API format.
 - **API key auth** — `/v1/*` supports `Authorization: Bearer` / `x-api-key`, suitable for public deployment.
 - **Chain of thought (Reasoning/Thinking)** — with thinking enabled, reasoning tokens are automatically separated and exposed via the `reasoning_content` field.
@@ -22,6 +23,8 @@
 - **PoW auth** — automatically completes the WASM proof-of-work (DeepSeekHashV1) challenge.
 - **Session management** — automatically creates and manages DeepSeek Chat sessions; optional multi-turn session reuse.
 - **Multi-account pool** — round-robin allocation, idle/busy/error states, health checks, auto-recovery.
+- **Proxy pool** — one proxy per account, egress binding, connectivity checks, and encrypted storage.
+- **Sub2API upstream support** — rich model catalogue, provider manifest, pricing/multiplier settings, and a sync script.
 - **Client rate limiting** — sliding window, counted independently per API key and IP; response header `X-RateLimit-*`.
 - **Usage statistics** — tiktoken-based estimation of prompt / completion / total tokens.
 - **Admin panel** — built-in web management UI supporting request statistics and account pool management (multi-account round-robin / persistent CRUD / re-login).
@@ -215,6 +218,47 @@ The WebUI "Proxy Pool" supports HTTP, HTTPS, SOCKS4, SOCKS5, and SOCKS5H:
 - Connectivity checks use `PROXY_CHECK_URL` (default `https://chat.deepseek.com/`).
 
 Use a stable, geographically consistent dedicated egress per account rather than rotating proxies per request.
+
+---
+
+## Sub2API Upstream Setup
+
+Recommended Sub2API account:
+
+```json
+{
+  "platform": "deepseek",
+  "type": "apikey",
+  "credentials": {
+    "api_key": "<DS2API client API key>",
+    "base_url": "https://ds2api.example.com",
+    "account_mode": "payg",
+    "api_protocol": "chat_completions",
+    "model_mapping": {
+      "deepseek-chat": "<current DS2API public model>"
+    }
+  }
+}
+```
+
+- Use the site root as `base_url`; Sub2API appends `/v1/models` and `/v1/chat/completions`.
+- Keep `type=apikey` so Sub2API's upstream model sync works.
+- Prefer `api_protocol=chat_completions`; Codex/Responses clients can use `responses`, since DS2API exposes both `/v1/responses` and `/responses`.
+- Add custom public model names to `model_mapping`.
+- Account multipliers, channel model pricing, and group peak multipliers remain local to Sub2API.
+
+After configuration, run the synchronizer:
+
+```powershell
+$env:DS2API_KEY = "<DS2API API key>"
+$env:SUB2API_ADMIN_TOKEN = "<Sub2API admin token>"
+.\.venv\Scripts\python.exe scripts\sync_sub2api.py `
+  --sub2api-url http://127.0.0.1:18080 `
+  --group-id 1 `
+  --apply
+```
+
+Omit `--apply` for a payload-only dry run.
 
 ---
 

@@ -25,8 +25,10 @@ import { useApi } from '@/hooks/useApi'
 import { del, ApiCallError } from '@/lib/api'
 import { toast } from '@/hooks/use-toast'
 import { AccountForm } from '@/components/accounts/AccountForm'
+import { CredentialImportPanel } from '@/components/accounts/CredentialImportPanel'
 import { AccountTable } from '@/components/accounts/AccountTable'
 import { AccountDetailDrawer } from '@/components/accounts/AccountDetailDrawer'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import type { Account, AccountsResponse } from '@/lib/types'
 
 export default function AccountsPage() {
@@ -105,18 +107,36 @@ export default function AccountsPage() {
 
       {/* Add dialog */}
       <Dialog open={addOpen} onOpenChange={setAddOpen}>
-        <DialogContent>
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>添加账号</DialogTitle>
-            <DialogDescription>输入 DeepSeek 账号的 Token 与 Cookies 即可使用</DialogDescription>
+            <DialogDescription>
+              推荐从已登录的浏览器导入凭据，也可手动填写 Token 与 Cookies
+            </DialogDescription>
           </DialogHeader>
-          <AccountForm
-            onSaved={() => {
-              setAddOpen(false)
-              refresh()
-            }}
-            onCancel={() => setAddOpen(false)}
-          />
+          <Tabs defaultValue="import">
+            <TabsList className="grid w-full grid-cols-2">
+              <TabsTrigger value="import">浏览器导入</TabsTrigger>
+              <TabsTrigger value="manual">手动填写</TabsTrigger>
+            </TabsList>
+            <TabsContent value="import">
+              <CredentialImportPanel
+                onImported={() => {
+                  setAddOpen(false)
+                  refresh()
+                }}
+              />
+            </TabsContent>
+            <TabsContent value="manual">
+              <AccountForm
+                onSaved={() => {
+                  setAddOpen(false)
+                  refresh()
+                }}
+                onCancel={() => setAddOpen(false)}
+              />
+            </TabsContent>
+          </Tabs>
         </DialogContent>
       </Dialog>
 
