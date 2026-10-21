@@ -32,6 +32,10 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
   const [email, setEmail] = useState(account?.email ?? '')
   const [provider, setProvider] = useState(account?.provider ?? 'deepseek')
   const [userId, setUserId] = useState('')
+  const [refreshToken, setRefreshToken] = useState('')
+  const [xsrfToken, setXsrfToken] = useState('')
+  const [sessionId, setSessionId] = useState(account?.session_id ?? '')
+  const [topicId, setTopicId] = useState(account?.topic_id ?? '')
   const [token, setToken] = useState('')
   const [cookies, setCookies] = useState('')
   const [deviceId, setDeviceId] = useState('')
@@ -58,8 +62,23 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
   const handleSave = async () => {
     if (busy) return
     const effectiveUserId = userId.trim() || zaiUserIdFromToken(token)
+    const isKimi = provider === 'kimi'
+    const isQwen = provider === 'qianwen'
+    const effectiveRefreshToken = refreshToken.trim()
     if (provider === 'zai' && !effectiveUserId && !(isEdit && account?.has_user_id)) {
       toast({ title: 'z.ai 账号需要 User ID', variant: 'destructive' })
+      return
+    }
+    if (isQwen && (!cookies.trim() || !sessionId.trim())) {
+      toast({ title: '千问账号需要 Cookies 和 Session ID', variant: 'destructive' })
+      return
+    }
+    if (
+      isKimi
+      && !effectiveRefreshToken
+      && !(isEdit && account?.has_refresh_token)
+    ) {
+      toast({ title: 'Kimi 账号需要 Refresh Token', variant: 'destructive' })
       return
     }
     setBusy(true)
@@ -74,13 +93,17 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
         if (cookies) body.cookies = cookies
         if (deviceId) body.device_id = deviceId
         if (effectiveUserId) body.user_id = effectiveUserId
+        if (effectiveRefreshToken) body.refresh_token = effectiveRefreshToken
+        if (xsrfToken) body.xsrf_token = xsrfToken
+        if (sessionId) body.session_id = sessionId
+        if (topicId) body.topic_id = topicId
         await put(`/admin/api/accounts/${encodeURIComponent(account.id)}`, body)
         toast({ title: '账号已保存', variant: 'success' })
         // Refetch the account to get the fresh data.
         const saved: Account = { ...account, email: email || account.email }
         onSaved(saved)
       } else {
-        if (!token) {
+        if (!token && provider !== 'qianwen') {
           toast({ title: 'Token 不能为空', variant: 'destructive' })
           setBusy(false)
           return
@@ -93,12 +116,20 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
           device_id: deviceId,
           provider,
           user_id: effectiveUserId,
+          refresh_token: effectiveRefreshToken,
+          xsrf_token: xsrfToken,
+          session_id: sessionId,
+          topic_id: topicId,
         })
         toast({ title: '账号添加成功', variant: 'success' })
         onSaved(res.account)
         setEmail('')
         setProvider('deepseek')
         setUserId('')
+        setRefreshToken('')
+        setXsrfToken('')
+        setSessionId('')
+        setTopicId('')
         setToken('')
         setCookies('')
         setDeviceId('')
@@ -123,6 +154,8 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
           <SelectContent>
             <SelectItem value="deepseek">DeepSeek</SelectItem>
             <SelectItem value="zai">z.ai</SelectItem>
+            <SelectItem value="kimi">Kimi</SelectItem>
+            <SelectItem value="qianwen">千问</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -154,6 +187,46 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
           <p className="text-[11px] text-muted-foreground">
             Z.ai 的 X-Signature 签名需要该 User ID；留空时会尝试解析 token JWT。
           </p>
+        </div>
+      )}
+      {provider === 'kimi' && (
+        <div className="space-y-1.5">
+          <Label htmlFor="acct-refresh-token">Kimi Refresh Token</Label>
+          <Input
+            id="acct-refresh-token"
+            value={refreshToken}
+            onChange={(e) => setRefreshToken(e.target.value)}
+            placeholder={
+              isEdit && account?.has_refresh_token
+                ? `留空保持不变（当前 ${account.refresh_token_preview}）`
+                : 'localStorage.refresh_token'
+            }
+            autoComplete="off"
+            className="font-mono text-xs"
+          />
+          <p className="text-[11px] text-muted-foreground">
+            Access token 只有约 15 分钟；服务端用 Refresh Token 自动续期。
+          </p>
+        </div>
+      )}
+      {provider === 'qianwen' && (
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="space-y-1.5 sm:col-span-2">
+            <Label htmlFor="acct-qwen-user-id">Qianwen User ID</Label>
+            <Input id="acct-qwen-user-id" value={userId} onChange={(e) => setUserId(e.target.value)} placeholder="x-user-id" className="font-mono text-xs" />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="acct-session-id">Qianwen Session ID</Label>
+            <Input id="acct-session-id" value={sessionId} onChange={(e) => setSessionId(e.target.value)} placeholder="URL /chat/ 后的 session id" className="font-mono text-xs" />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="acct-topic-id">Topic ID</Label>
+            <Input id="acct-topic-id" value={topicId} onChange={(e) => setTopicId(e.target.value)} placeholder="session/get 返回的 topic_id" className="font-mono text-xs" />
+          </div>
+          <div className="space-y-1.5 sm:col-span-2">
+            <Label htmlFor="acct-xsrf">XSRF Token</Label>
+            <Input id="acct-xsrf" value={xsrfToken} onChange={(e) => setXsrfToken(e.target.value)} placeholder="x-xsrf-token 或 Cookie XSRF-TOKEN" className="font-mono text-xs" />
+          </div>
         </div>
       )}
       <div className="space-y-1.5">

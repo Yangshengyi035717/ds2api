@@ -30,6 +30,8 @@ from proxy_pool import get_proxy_pool
 from provider_registry import (
     PROVIDER_DEEPSEEK,
     normalize_provider,
+    kimi_model_name,
+    kimi_upstream_model_name,
     zai_upstream_model_name,
 )
 from keepalive_scheduler import get_scheduler_or_store, notify_account_changed
@@ -217,6 +219,10 @@ class AccountAddRequest(BaseModel):
     device_id: str | None = ""
     provider: str = PROVIDER_DEEPSEEK
     user_id: str | None = ""
+    refresh_token: str | None = ""
+    xsrf_token: str | None = ""
+    session_id: str | None = ""
+    topic_id: str | None = ""
 
 
 class AccountUpdateRequest(BaseModel):
@@ -227,6 +233,10 @@ class AccountUpdateRequest(BaseModel):
     device_id: str | None = None
     provider: str | None = None
     user_id: str | None = None
+    refresh_token: str | None = None
+    xsrf_token: str | None = None
+    session_id: str | None = None
+    topic_id: str | None = None
 
 
 class KeepaliveAccountUpdateRequest(BaseModel):
@@ -250,6 +260,10 @@ class CredentialImportRequest(BaseModel):
     payload: str | dict | list
     provider: str | None = None
     user_id: str | None = ""
+    refresh_token: str | None = ""
+    xsrf_token: str | None = ""
+    session_id: str | None = ""
+    topic_id: str | None = ""
 
 
 class BrowserLoginStartRequest(BaseModel):
@@ -669,6 +683,8 @@ async def env_info(request: Request):
         "model_name": runtime_snapshot["model_name"],
         "zai_model_name": os.environ.get("ZAI_MODEL_NAME", "glm-5.3-flash"),
         "zai_upstream_model": zai_upstream_model_name(),
+        "kimi_model_name": kimi_model_name(),
+        "kimi_upstream_model": kimi_upstream_model_name(),
         "model_name_source": runtime_snapshot["source"],
         "model_routes_configured": bool(os.environ.get("MODEL_ROUTES", "").strip()),
         "rate_limit": {
@@ -699,6 +715,8 @@ async def env_info(request: Request):
             {"name": "MODEL_ROUTES", "value": _env("MODEL_ROUTES") or "", "is_default": _flag("MODEL_ROUTES") == "default"},
             {"name": "ZAI_MODEL_NAME", "value": _env("ZAI_MODEL_NAME") or "glm-5.3-flash", "is_default": _flag("ZAI_MODEL_NAME") == "default"},
             {"name": "ZAI_UPSTREAM_MODEL", "value": zai_upstream_model_name(), "is_default": _flag("ZAI_UPSTREAM_MODEL") == "default"},
+            {"name": "KIMI_MODEL_NAME", "value": kimi_model_name(), "is_default": _flag("KIMI_MODEL_NAME") == "default"},
+            {"name": "KIMI_UPSTREAM_MODEL", "value": kimi_upstream_model_name(), "is_default": _flag("KIMI_UPSTREAM_MODEL") == "default"},
             {
                 "name": "DEEPSEEK_ADMIN_PASSWORD",
                 "value": "***" if password_state["set"] else "",
@@ -755,6 +773,10 @@ def _credential_payload(acct) -> dict:
         "cookies": acct.cookies,
         "device_id": acct.device_id,
         "user_id": acct.user_id,
+        "refresh_token": acct.refresh_token,
+        "xsrf_token": acct.xsrf_token,
+        "session_id": acct.session_id,
+        "topic_id": acct.topic_id,
         "proxy_url": proxy_url,
     }
 
@@ -887,6 +909,10 @@ async def add_account(req: AccountAddRequest, request: Request):
             device_id=req.device_id or "",
             provider=req.provider,
             user_id=req.user_id or "",
+            refresh_token=req.refresh_token or "",
+            xsrf_token=req.xsrf_token or "",
+            session_id=req.session_id or "",
+            topic_id=req.topic_id or "",
         )
     except Exception as e:
         _pool_error(e)
@@ -913,6 +939,12 @@ async def import_account(req: CredentialImportRequest, request: Request, respons
         req.provider or imported.provider or PROVIDER_DEEPSEEK
     )
     user_id = (req.user_id or imported.user_id or "").strip()
+    refresh_token = (
+        req.refresh_token or imported.refresh_token or ""
+    ).strip()
+    xsrf_token = (req.xsrf_token or "").strip()
+    session_id = (req.session_id or "").strip()
+    topic_id = (req.topic_id or "").strip()
     pool = get_pool()
     try:
         existing = pool.find_by_token(imported.token, provider=provider)
@@ -924,6 +956,10 @@ async def import_account(req: CredentialImportRequest, request: Request, respons
                 device_id=imported.device_id or None,
                 provider=provider,
                 user_id=user_id,
+                refresh_token=refresh_token or None,
+                xsrf_token=xsrf_token or None,
+                session_id=session_id or None,
+                topic_id=topic_id or None,
             )
             action = "updated"
         else:
@@ -933,6 +969,10 @@ async def import_account(req: CredentialImportRequest, request: Request, respons
                 device_id=imported.device_id,
                 provider=provider,
                 user_id=user_id,
+                refresh_token=refresh_token,
+                xsrf_token=xsrf_token,
+                session_id=session_id,
+                topic_id=topic_id,
             )
             action = "created"
     except Exception as e:
@@ -1069,6 +1109,10 @@ async def update_account(account_id: str, req: AccountUpdateRequest, request: Re
             device_id=req.device_id,
             provider=req.provider,
             user_id=req.user_id,
+            refresh_token=req.refresh_token,
+            xsrf_token=req.xsrf_token,
+            session_id=req.session_id,
+            topic_id=req.topic_id,
         )
     except Exception as e:
         _pool_error(e)

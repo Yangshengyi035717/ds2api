@@ -64,6 +64,12 @@ export function AccountDetailDrawer({ account, onClose, onRelogin }: Props) {
                   label="Z.ai User ID"
                   value={account.has_user_id ? account.user_id_preview : '—'}
                 />
+                <DetailRow
+                  label="Kimi Refresh Token"
+                  value={account.has_refresh_token ? account.refresh_token_preview : '—'}
+                />
+                <DetailRow label="Qianwen Session" value={account.session_id || '—'} />
+                <DetailRow label="Qianwen Topic" value={account.topic_id || '—'} />
                 <DetailRow label="状态" value={account.state} />
                 <DetailRow
                   label="出口代理"

@@ -45,6 +45,12 @@ export interface Account {
   has_device_id: boolean
   user_id_preview: string
   has_user_id: boolean
+  refresh_token_preview: string
+  has_refresh_token: boolean
+  xsrf_token_preview: string
+  has_xsrf_token: boolean
+  session_id: string
+  topic_id: string
   credential_fingerprint: string
   proxy_id: string
   proxy_label: string
@@ -132,6 +138,7 @@ export interface CredentialImportSummary {
   device_id_preview: string
   has_user_id: boolean
   user_id_preview: string
+  has_refresh_token: boolean
   warnings: string[]
 }
 

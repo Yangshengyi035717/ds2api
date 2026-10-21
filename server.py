@@ -81,7 +81,16 @@ from api_key_store import get_api_key_store
 from runtime_config import get_runtime_config
 from provider_registry import (
     PROVIDER_DEEPSEEK,
+    PROVIDER_KIMI,
+    PROVIDER_QWEN,
     PROVIDER_ZAI,
+    available_kimi_models,
+    kimi_model_name,
+    kimi_public_model,
+    kimi_upstream_model,
+    qwen_model_name,
+    qwen_public_model,
+    qwen_upstream_model,
     normalize_provider,
     provider_for_model,
     provider_label,
@@ -91,6 +100,8 @@ from provider_registry import (
 )
 from keepalive_scheduler import start_scheduler
 from zai_adapter import ZaiAuthError
+from kimi_adapter import KimiAuthError
+from qwen_adapter import QwenAuthError
 
 load_dotenv()
 configure_from_env()
@@ -112,12 +123,20 @@ def _public_model_for_request(model: str | None, provider: str) -> str:
     requested = str(model or "").strip()
     if provider == PROVIDER_ZAI:
         return zai_public_model(requested)
+    if provider == PROVIDER_KIMI:
+        return kimi_public_model(requested)
+    if provider == PROVIDER_QWEN:
+        return qwen_public_model(requested)
     return canonical_model_name(requested) if requested else _model_name()
 
 
 def _upstream_model_for_request(model: str | None, provider: str) -> str | None:
     if provider == PROVIDER_ZAI:
         return zai_upstream_model(model)
+    if provider == PROVIDER_KIMI:
+        return kimi_upstream_model(model)
+    if provider == PROVIDER_QWEN:
+        return qwen_upstream_model(model)
     return str(model or "").strip() or None
 
 
@@ -551,6 +570,24 @@ def _model_display_name(name: str) -> str:
     snapshot = get_runtime_config().snapshot()
     if name == zai_model_name():
         return os.environ.get("ZAI_MODEL_DISPLAY_NAME", "GLM-5.3 Flash").strip() or "GLM-5.3 Flash"
+    if name in available_kimi_models():
+        if name == kimi_model_name():
+            return (
+                os.environ.get("KIMI_MODEL_DISPLAY_NAME", "Kimi K2.6")
+                .strip()
+                or "Kimi K2.6"
+            )
+        if name == "kimi-k3":
+            return "Kimi K3"
+        if name == "kimi-k2.8":
+            return "Kimi K2.8"
+        return name
+    if name == qwen_model_name():
+        return (
+            os.environ.get("QWEN_MODEL_DISPLAY_NAME", "Qwen3.7 Max")
+            .strip()
+            or "Qwen3.7 Max"
+        )
     if name == snapshot["model_name"]:
         return str(snapshot["display_name"])
     configured = os.environ.get("MODEL_DISPLAY_NAME", "").strip()
@@ -567,6 +604,11 @@ def _available_model_names() -> list[str]:
     zai_name = zai_model_name()
     if zai_name not in names:
         names.append(zai_name)
+    for kimi_name in available_kimi_models():
+        if kimi_name not in names:
+            names.append(kimi_name)
+    if qwen_model_name() not in names:
+        names.append(qwen_model_name())
     return names
 
 
@@ -637,6 +679,30 @@ class AcquiredAccount:
                 SESSION_CACHE.put(self._cache_key, sess)
                 self._cached_session = sess
             return session_id
+        if self._provider == PROVIDER_KIMI:
+            session_id = self.adapter.create_session()
+            self._session_id = session_id
+            if self._cache_key:
+                sess = ChatSession(
+                    chat_session_id=session_id,
+                    account_id=self.acct.id,
+                    provider=self._provider,
+                )
+                SESSION_CACHE.put(self._cache_key, sess)
+                self._cached_session = sess
+            return session_id
+        if self._provider == PROVIDER_QWEN:
+            session_id = self.adapter.create_session()
+            self._session_id = session_id
+            if self._cache_key:
+                sess = ChatSession(
+                    chat_session_id=session_id,
+                    account_id=self.acct.id,
+                    provider=self._provider,
+                )
+                SESSION_CACHE.put(self._cache_key, sess)
+                self._cached_session = sess
+            return session_id
         # Reuse the cached session if we have one — multi-turn support.
         if self._cached_session is not None:
             self._session_id = self._cached_session.chat_session_id
@@ -677,7 +743,7 @@ class AcquiredAccount:
 
         Call *before* ``create_session()``.
         """
-        if self._provider == PROVIDER_ZAI:
+        if self._provider in {PROVIDER_ZAI, PROVIDER_KIMI, PROVIDER_QWEN}:
             return full_prompt
         cached = self._cached_session
         if cached is None or not (self._cache_key and cached.sent_prompt):
@@ -759,6 +825,8 @@ class AcquiredAccount:
         if self._released:
             return
         self._released = True
+        if self._provider == PROVIDER_KIMI:
+            pool.persist_adapter_tokens(self.acct)
         pool.release(self.acct)
         _UPSTREAM_LIMITER.release()
 
@@ -1254,7 +1322,7 @@ def _anthropic_nonstream(msg_id: str, prompt: str, tool_names: list[str],
         if cache_key:
             SESSION_CACHE.invalidate(cache_key)
         raise HTTPException(status_code=502, detail="上游返回空响应（可能触发限流），请稍后重试")
-    except ZaiAuthError as e:
+    except (ZaiAuthError, KimiAuthError, QwenAuthError) as e:
         get_stats().record(response_model, 0, success=False)
         pool.mark_error(acq.acct, str(e))
         raise HTTPException(status_code=401, detail=str(e))
@@ -1411,7 +1479,7 @@ def _handle_nonstream(proxy_id: str, prompt: str, tools: list[ToolDef] | None = 
         if cache_key:
             SESSION_CACHE.invalidate(cache_key)
         raise HTTPException(status_code=502, detail="上游返回空响应（可能触发限流），请稍后重试")
-    except ZaiAuthError as e:
+    except (ZaiAuthError, KimiAuthError, QwenAuthError) as e:
         get_stats().record(response_model, 0, success=False)
         pool.mark_error(acq.acct, str(e))
         raise HTTPException(status_code=401, detail=str(e))
@@ -1811,7 +1879,7 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
             # client SDK doesn't see a truncated stream.
             if isinstance(e, RateLimitError):
                 err_type, err_code, retry_after = "rate_limit_error", "rate_limit_exceeded", TRANSIENT_RETRY_AFTER_SECS
-            elif isinstance(e, ZaiAuthError):
+            elif isinstance(e, (ZaiAuthError, KimiAuthError, QwenAuthError)):
                 err_type, err_code, retry_after = "authentication_error", "invalid_api_key", None
             elif isinstance(e, UpstreamTransientError):
                 err_type, err_code, retry_after = "api_error", "upstream_temporarily_unavailable", TRANSIENT_RETRY_AFTER_SECS

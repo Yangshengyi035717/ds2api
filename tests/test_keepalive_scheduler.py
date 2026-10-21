@@ -89,6 +89,7 @@ class _FakePool:
                 id="deepseek-1",
                 provider="deepseek",
                 token="deepseek-token",
+                refresh_token="",
                 cookies="ds_session_id=old",
                 device_id="device-1",
                 proxy="",
@@ -101,6 +102,7 @@ class _FakePool:
                 id="zai-1",
                 provider="zai",
                 token="zai-token",
+                refresh_token="",
                 cookies="acw_tc=old",
                 device_id="uid_device",
                 proxy="",
@@ -119,8 +121,20 @@ class _FakePool:
     def get_by_id(self, account_id):
         return self.accounts.get(account_id)
 
-    def update_keepalive_credentials(self, account_id, *, cookies=None, device_id=None):
+    def update_keepalive_credentials(
+        self,
+        account_id,
+        *,
+        token=None,
+        refresh_token=None,
+        cookies=None,
+        device_id=None,
+    ):
         account = self.accounts[account_id]
+        if token is not None:
+            account.token = token
+        if refresh_token is not None:
+            account.refresh_token = refresh_token
         if cookies is not None:
             account.cookies = cookies
         if device_id is not None:
@@ -148,11 +162,15 @@ def test_scheduler_runs_providers_independently(store, monkeypatch):
                 keepalive.ProbeResult(200, True, 0, ""),
                 "ds_session_id=new",
                 account.device_id,
+                account.token,
+                account.refresh_token,
             )
         return (
             keepalive.ProbeResult(401, False, 401, "invalid z.ai token"),
             account.cookies,
             account.device_id,
+            account.token,
+            account.refresh_token,
         )
 
     monkeypatch.setattr(scheduler, "_probe", fake_probe)
@@ -181,6 +199,8 @@ def test_scheduler_isolates_one_crashing_job(store, monkeypatch):
             keepalive.ProbeResult(200, True, 0, ""),
             "acw_tc=new",
             account.device_id,
+            account.token,
+            account.refresh_token,
         )
 
     monkeypatch.setattr(scheduler, "_probe", fake_probe)

@@ -204,6 +204,8 @@ export default function ApiDocsPage() {
   const zaiModel = models.find((model) => model.provider === 'zai')?.id
     ?? models.find((model) => model.id.startsWith('glm-'))?.id
     ?? 'glm-5.3-flash'
+  const kimiModel = models.find((model) => model.provider === 'kimi')?.id
+    ?? 'kimi-k2.6'
 
   return (
     <div className="mx-auto max-w-[1180px] space-y-4 animate-fade-in">
@@ -294,12 +296,13 @@ export default function ApiDocsPage() {
           </Card>
 
           <Tabs defaultValue="quick">
-            <TabsList className="grid h-auto w-full grid-cols-2 sm:grid-cols-3 lg:grid-cols-7">
+            <TabsList className="grid h-auto w-full grid-cols-2 sm:grid-cols-3 lg:grid-cols-8">
               <TabsTrigger value="quick">快速开始</TabsTrigger>
               <TabsTrigger value="openai">OpenAI</TabsTrigger>
               <TabsTrigger value="responses">Responses</TabsTrigger>
               <TabsTrigger value="anthropic">Anthropic</TabsTrigger>
               <TabsTrigger value="zai">z.ai</TabsTrigger>
+              <TabsTrigger value="kimi">Kimi</TabsTrigger>
               <TabsTrigger value="sub2api">Sub2API</TabsTrigger>
               <TabsTrigger value="errors">错误与限制</TabsTrigger>
             </TabsList>
@@ -471,6 +474,32 @@ export default function ApiDocsPage() {
                     <FieldRow name="账号要求" description="z.ai 账号必须包含有效 token、user_id 和稳定 device_id。" />
                     <FieldRow name="thinking_mode" description="映射 z.ai enable_thinking / reasoning_effort。" />
                     <FieldRow name="search_enabled" description="映射 z.ai web search 能力。" />
+                  </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="kimi" className="space-y-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Kimi / Moonshot</CardTitle>
+                  <CardDescription>
+                    Kimi 使用 Connect JSON 流式协议；服务端把它转换为统一的
+                    OpenAI / Anthropic SSE 响应。
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <MethodPath method="POST" path="/v1/chat/completions" />
+                  <CodeBlock
+                    code={openAiRequest(kimiModel)}
+                    title="OpenAI Chat Completions"
+                    language="json"
+                  />
+                  <div>
+                    <FieldRow name="公开模型名" description={`${kimiModel}；请求自动路由到 provider=kimi 账号。`} />
+                    <FieldRow name="默认上游模型" description="kimi-k2.6 → k2d6-chat；可选 kimi-k3 / kimi-k2.8。" />
+                    <FieldRow name="认证" description="access_token 约 15 分钟有效，服务端使用 refresh_token 自动续期。" />
+                    <FieldRow name="协议" description="application/connect+json，按 Connect 帧解析 thinking/answer/done 事件。" />
                   </div>
                 </CardContent>
               </Card>

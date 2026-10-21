@@ -35,6 +35,8 @@ interface EnvInfoResponse {
   model_name: string
   zai_model_name: string
   zai_upstream_model: string
+  kimi_model_name: string
+  kimi_upstream_model: string
   model_name_source: string
   model_routes_configured: boolean
   rate_limit: {
@@ -163,6 +165,8 @@ export function EnvPreview() {
           <Row k="公开模型名" v={info.model_name} />
           <Row k="Z.ai 模型名" v={info.zai_model_name} />
           <Row k="Z.ai 上游模型" v={info.zai_upstream_model} />
+          <Row k="Kimi 模型名" v={info.kimi_model_name} />
+          <Row k="Kimi 上游模型" v={info.kimi_upstream_model} />
           <Row
             k="模型名来源"
             v={

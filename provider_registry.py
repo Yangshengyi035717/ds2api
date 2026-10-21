@@ -5,11 +5,20 @@ import os
 
 PROVIDER_DEEPSEEK = "deepseek"
 PROVIDER_ZAI = "zai"
-SUPPORTED_PROVIDERS = (PROVIDER_DEEPSEEK, PROVIDER_ZAI)
+PROVIDER_KIMI = "kimi"
+PROVIDER_QWEN = "qianwen"
+SUPPORTED_PROVIDERS = (
+    PROVIDER_DEEPSEEK,
+    PROVIDER_ZAI,
+    PROVIDER_KIMI,
+    PROVIDER_QWEN,
+)
 
 PROVIDER_LABELS = {
     PROVIDER_DEEPSEEK: "DeepSeek",
     PROVIDER_ZAI: "z.ai",
+    PROVIDER_KIMI: "Kimi",
+    PROVIDER_QWEN: "千问",
 }
 
 _PROVIDER_ALIASES = {
@@ -19,6 +28,12 @@ _PROVIDER_ALIASES = {
     "z.ai": PROVIDER_ZAI,
     "z-ai": PROVIDER_ZAI,
     "zchat": PROVIDER_ZAI,
+    "kimi": PROVIDER_KIMI,
+    "kimi.com": PROVIDER_KIMI,
+    "moonshot": PROVIDER_KIMI,
+    "qianwen": PROVIDER_QWEN,
+    "qwen": PROVIDER_QWEN,
+    "tongyi": PROVIDER_QWEN,
 }
 
 _ZAI_MODEL_ALIASES = {
@@ -53,6 +68,17 @@ def zai_upstream_model_name() -> str:
     )
 
 
+def kimi_model_name() -> str:
+    return os.environ.get("KIMI_MODEL_NAME", "kimi-k2.6").strip() or "kimi-k2.6"
+
+
+def kimi_upstream_model_name() -> str:
+    return (
+        os.environ.get("KIMI_UPSTREAM_MODEL", "k2d6-chat").strip()
+        or "k2d6-chat"
+    )
+
+
 def provider_for_model(model: str | None) -> str:
     name = str(model or "").strip().lower()
     if (
@@ -62,6 +88,19 @@ def provider_for_model(model: str | None) -> str:
         or name == zai_upstream_model_name().lower()
     ):
         return PROVIDER_ZAI
+    if (
+        name.startswith("kimi-")
+        or name in {"k2d6-chat", "k3-agent", "k28-agent-preview"}
+        or name == kimi_model_name().lower()
+        or name == kimi_upstream_model_name().lower()
+    ):
+        return PROVIDER_KIMI
+    if (
+        name.startswith("qwen")
+        or name in {"qianwen", "tongyi", "qwen3.7-max", "qwen3.7-max"}
+        or name == qwen_upstream_model_name().lower()
+    ):
+        return PROVIDER_QWEN
     return PROVIDER_DEEPSEEK
 
 
@@ -83,6 +122,63 @@ def zai_upstream_model(model: str | None) -> str:
         or requested.lower() in _ZAI_MODEL_ALIASES
     ):
         return configured_upstream
+    return requested
+
+
+def kimi_public_model(model: str | None) -> str:
+    requested = str(model or "").strip()
+    if not requested or requested.lower() in {"kimi", "kimi.com", "moonshot"}:
+        return kimi_model_name()
+    return requested
+
+
+def kimi_upstream_model(model: str | None) -> str:
+    requested = kimi_public_model(model)
+    aliases = {
+        kimi_model_name().lower(): kimi_upstream_model_name(),
+        "kimi-k2.6": "k2d6-chat",
+        "kimi-k2d6": "k2d6-chat",
+        "kimi-k3": "k3-agent",
+        "kimi-k2.8": "k28-agent-preview",
+    }
+    return aliases.get(requested.lower(), requested)
+
+
+def available_kimi_models() -> list[str]:
+    configured = kimi_model_name()
+    models = [configured]
+    for item in (
+        os.environ.get("KIMI_K3_MODEL_NAME", "kimi-k3").strip(),
+        os.environ.get("KIMI_K28_MODEL_NAME", "kimi-k2.8").strip(),
+    ):
+        if item and item not in models:
+            models.append(item)
+    return models
+
+
+def qwen_model_name() -> str:
+    return os.environ.get("QWEN_MODEL_NAME", "qwen3.7-max").strip() or "qwen3.7-max"
+
+
+def qwen_upstream_model_name() -> str:
+    return os.environ.get("QWEN_UPSTREAM_MODEL", "Qwen3.7-Max").strip() or "Qwen3.7-Max"
+
+
+def qwen_upstream_model(model: str | None) -> str:
+    requested = str(model or "").strip()
+    if (
+        not requested
+        or requested.lower() in {"qwen", "qianwen", "tongyi"}
+        or requested.lower() == qwen_model_name().lower()
+    ):
+        return qwen_upstream_model_name()
+    return requested
+
+
+def qwen_public_model(model: str | None) -> str:
+    requested = str(model or "").strip()
+    if not requested or requested.lower() in {"qwen", "qianwen", "tongyi"}:
+        return qwen_model_name()
     return requested
 
 

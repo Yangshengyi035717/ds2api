@@ -33,6 +33,9 @@ interface ApiMessage {
 const MODEL_LABELS: Record<string, string> = {
   'deepseek-chat': 'DeepSeek Chat · deepseek',
   'glm-5.3-flash': 'GLM-5.3 Flash · z.ai',
+  'kimi-k2.6': 'Kimi K2.6 · kimi',
+  'kimi-k3': 'Kimi K3 · kimi',
+  'kimi-k2.8': 'Kimi K2.8 · kimi',
   'deepseek-reasoner': 'DeepSeek Reasoner（旧别名）',
 }
 
@@ -196,7 +199,7 @@ export default function PlaygroundPage() {
               <ModelSelector value={model} onChange={setModel} labels={MODEL_LABELS} />
               <p className="text-[11px] text-muted-foreground">
                 模型列表来自 <code className="font-mono">/v1/models</code>。
-                DeepSeek 与 z.ai 会自动路由到对应账号池，是否思考由下面的开关
+                DeepSeek、z.ai 与 Kimi 会自动路由到对应账号池，是否思考由下面的开关
                 （或服务端 <code className="font-mono">THINKING</code>）决定。
               </p>
             </div>

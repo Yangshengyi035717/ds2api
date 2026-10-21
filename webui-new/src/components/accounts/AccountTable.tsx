@@ -75,7 +75,13 @@ export function AccountTable({
                         {a.email || a.id.slice(0, 10)}
                       </div>
                       <Badge
-                        variant={a.provider === 'zai' ? 'outline' : 'secondary'}
+                        variant={
+                          a.provider === 'zai' ||
+                          a.provider === 'kimi' ||
+                          a.provider === 'qianwen'
+                            ? 'outline'
+                            : 'secondary'
+                        }
                         className="mt-1 text-[10px]"
                       >
                         {a.provider_label || a.provider}

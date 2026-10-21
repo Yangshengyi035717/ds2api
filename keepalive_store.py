@@ -8,7 +8,13 @@ import time
 from pathlib import Path
 from typing import Iterable
 
-from provider_registry import PROVIDER_DEEPSEEK, PROVIDER_ZAI, normalize_provider
+from provider_registry import (
+    PROVIDER_DEEPSEEK,
+    PROVIDER_KIMI,
+    PROVIDER_QWEN,
+    PROVIDER_ZAI,
+    normalize_provider,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_STORE_PATH = PROJECT_ROOT / "data" / "keepalive.sqlite3"
@@ -49,6 +55,12 @@ class KeepaliveJobStore:
         )
         self.zai_interval = _clamp_interval(
             _env_int("KEEPALIVE_ZAI_INTERVAL", 15 * 60)
+        )
+        self.kimi_interval = _clamp_interval(
+            _env_int("KEEPALIVE_KIMI_INTERVAL", 15 * 60)
+        )
+        self.qwen_interval = _clamp_interval(
+            _env_int("KEEPALIVE_QWEN_INTERVAL", 15 * 60)
         )
         self.startup_jitter = max(0, _env_int("KEEPALIVE_STARTUP_JITTER", 60))
         self.lease_secs = max(30, _env_int("KEEPALIVE_LEASE_SECS", 120))
@@ -93,11 +105,14 @@ class KeepaliveJobStore:
             os.chmod(self.path, 0o600)
 
     def default_interval(self, provider: str) -> int:
-        return (
-            self.zai_interval
-            if normalize_provider(provider) == PROVIDER_ZAI
-            else self.deepseek_interval
-        )
+        normalized = normalize_provider(provider)
+        if normalized == PROVIDER_ZAI:
+            return self.zai_interval
+        if normalized == PROVIDER_KIMI:
+            return self.kimi_interval
+        if normalized == PROVIDER_QWEN:
+            return self.qwen_interval
+        return self.deepseek_interval
 
     def sync_accounts(
         self,

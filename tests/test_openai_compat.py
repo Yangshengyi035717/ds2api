@@ -43,6 +43,10 @@ def test_models_expose_sub2api_metadata(compat_client):
     assert {model["id"] for model in body["data"]} == {
         "deepseek-chat",
         "glm-5.3-flash",
+        "kimi-k2.6",
+        "kimi-k3",
+        "kimi-k2.8",
+        "qwen3.7-max",
     }
     deepseek = next(model for model in body["data"] if model["id"] == "deepseek-chat")
     zai = next(model for model in body["data"] if model["id"] == "glm-5.3-flash")
@@ -59,6 +63,12 @@ def test_models_expose_sub2api_metadata(compat_client):
     assert zai["owned_by"] == "zai"
     assert zai["provider"] == "zai"
     assert zai["display_name"] == "GLM-5.3 Flash"
+    kimi = next(model for model in body["data"] if model["id"] == "kimi-k2.6")
+    assert kimi["provider"] == "kimi"
+    assert kimi["display_name"] == "Kimi K2.6"
+    qwen = next(model for model in body["data"] if model["id"] == "qwen3.7-max")
+    assert qwen["provider"] == "qianwen"
+    assert qwen["display_name"] == "Qwen3.7 Max"
 
 
 def test_single_model_lookup_and_openai_404(compat_client):
@@ -71,6 +81,14 @@ def test_single_model_lookup_and_openai_404(compat_client):
     zai = client.get("/v1/models/glm-5.3-flash", headers=_auth(key))
     assert zai.status_code == 200
     assert zai.json()["provider"] == "zai"
+
+    kimi = client.get("/v1/models/kimi-k2.6", headers=_auth(key))
+    assert kimi.status_code == 200
+    assert kimi.json()["provider"] == "kimi"
+
+    qwen = client.get("/v1/models/qwen3.7-max", headers=_auth(key))
+    assert qwen.status_code == 200
+    assert qwen.json()["provider"] == "qianwen"
 
     missing = client.get("/v1/models/not-a-model", headers=_auth(key))
     assert missing.status_code == 404
@@ -120,6 +138,8 @@ def test_provider_manifest_is_authenticated_and_descriptive(compat_client):
     assert {model["provider"] for model in body["models"]} == {
         "deepseek",
         "zai",
+        "kimi",
+        "qianwen",
     }
     assert body["pricing"]["automatic"] is False
 

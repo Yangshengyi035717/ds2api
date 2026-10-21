@@ -78,9 +78,45 @@ const ZAI_EXPORT_SCRIPT = `(async () => {
   return text
 })()`
 
+const KIMI_EXPORT_SCRIPT = `(() => {
+  const accessToken = localStorage.getItem('access_token') || ''
+  const refreshToken = localStorage.getItem('refresh_token') || ''
+  if (!accessToken || !refreshToken) {
+    throw new Error('未找到 Kimi access_token / refresh_token，请先登录')
+  }
+  const decode = (token) => {
+    try {
+      const part = token.split('.')[1]
+      const normalized = part.replace(/-/g, '+').replace(/_/g, '/')
+      return JSON.parse(atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=')))
+    } catch {
+      return {}
+    }
+  }
+  const claims = decode(accessToken)
+  const cookies = Object.fromEntries(
+    document.cookie.split(';').map((part) => {
+      const i = part.indexOf('=')
+      return i < 0 ? ['', ''] : [part.slice(0, i).trim(), part.slice(i + 1).trim()]
+    }).filter(([key]) => key)
+  )
+  const out = {
+    provider: 'kimi',
+    token: accessToken,
+    refresh_token: refreshToken,
+    user_id: localStorage.getItem('msh_user_id') || claims.sub || claims.abstract_user_id || '',
+    device_id: claims.device_id || '',
+    cookies
+  }
+  const text = JSON.stringify(out, null, 2)
+  navigator.clipboard?.writeText(text)
+  console.log(text)
+  return text
+})()`
+
 interface Props {
   onImported: (account: Account) => void
-  provider?: 'deepseek' | 'zai'
+  provider?: 'deepseek' | 'zai' | 'kimi'
 }
 
 export function CredentialImportPanel({ onImported, provider = 'deepseek' }: Props) {
@@ -89,19 +125,26 @@ export function CredentialImportPanel({ onImported, provider = 'deepseek' }: Pro
   const [result, setResult] = useState<CredentialImportResponse | null>(null)
   const charCount = payload.length
   const isZai = provider === 'zai'
+  const isKimi = provider === 'kimi'
 
   const placeholder = useMemo(
     () =>
       isZai
         ? '粘贴在 zchat.z.ai 控制台运行“复制导出脚本”后输出的 JSON。'
-        : '粘贴 DevTools 导出的 HAR，或在 chat.deepseek.com 控制台运行“复制导出脚本”后粘贴输出的 JSON。',
-    [isZai],
+        : isKimi
+          ? '粘贴在 www.kimi.com 控制台运行“复制导出脚本”后输出的 JSON。'
+          : '粘贴 DevTools 导出的 HAR，或在 chat.deepseek.com 控制台运行“复制导出脚本”后粘贴输出的 JSON。',
+    [isKimi, isZai],
   )
 
   const copyScript = async () => {
     try {
       await navigator.clipboard.writeText(
-        isZai ? ZAI_EXPORT_SCRIPT : DEEPSEEK_EXPORT_SCRIPT,
+        isKimi
+          ? KIMI_EXPORT_SCRIPT
+          : isZai
+            ? ZAI_EXPORT_SCRIPT
+            : DEEPSEEK_EXPORT_SCRIPT,
       )
       toast({ title: '导出脚本已复制', variant: 'success' })
     } catch {
@@ -149,6 +192,12 @@ export function CredentialImportPanel({ onImported, provider = 'deepseek' }: Pro
             页面运行导出脚本。脚本会读取 Token、用户 ID、Device ID 与 Cookie；
             退出登录或重新登录会轮换旧凭据。
           </p>
+        ) : isKimi ? (
+          <p>
+            请在已登录的 <code className="font-mono">www.kimi.com</code>{' '}
+            页面运行导出脚本。脚本读取 access_token、refresh_token、用户 ID、
+            Device ID 与 Cookie；服务端会使用 refresh_token 自动续期。
+          </p>
         ) : (
           <p>
             DeepSeek 登录使用设备绑定的 MFA 签名，服务器无法代替浏览器完成密码登录。
@@ -161,11 +210,15 @@ export function CredentialImportPanel({ onImported, provider = 'deepseek' }: Pro
       <div className="space-y-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <Label htmlFor="credential-import">
-            {isZai ? 'z.ai 浏览器导出 JSON' : '凭据内容（HAR 或浏览器导出 JSON）'}
+            {isZai
+              ? 'z.ai 浏览器导出 JSON'
+              : isKimi
+                ? 'Kimi 浏览器导出 JSON'
+                : '凭据内容（HAR 或浏览器导出 JSON）'}
           </Label>
           <Button type="button" size="sm" variant="outline" onClick={copyScript}>
             <ClipboardCopy className="h-3.5 w-3.5" />
-            复制{isZai ? ' z.ai ' : '浏览器'}导出脚本
+            复制{isZai ? ' z.ai ' : isKimi ? ' Kimi ' : '浏览器'}导出脚本
           </Button>
         </div>
         <Textarea
@@ -181,6 +234,8 @@ export function CredentialImportPanel({ onImported, provider = 'deepseek' }: Pro
             ? `${charCount.toLocaleString()} 字符`
             : isZai
               ? '服务端只提取 token / user_id / device_id / cookie'
+              : isKimi
+                ? '服务端只提取 access_token / refresh_token / device_id / cookie'
               : '支持整份 HAR，服务端只提取 token / cookie / device_id'}
         </p>
       </div>
@@ -190,7 +245,9 @@ export function CredentialImportPanel({ onImported, provider = 'deepseek' }: Pro
         <ol className="mt-1 list-decimal space-y-1 pl-4">
           <li>
             在浏览器打开并登录{' '}
-            <code className="font-mono">{isZai ? 'zchat.z.ai' : 'chat.deepseek.com'}</code>。
+            <code className="font-mono">
+              {isZai ? 'zchat.z.ai' : isKimi ? 'www.kimi.com' : 'chat.deepseek.com'}
+            </code>。
           </li>
           <li>打开 DevTools → Console，运行上方脚本。</li>
           <li>脚本会把 JSON 复制到剪贴板，粘贴到上面即可。</li>
@@ -210,6 +267,9 @@ export function CredentialImportPanel({ onImported, provider = 'deepseek' }: Pro
             <li>Device ID：{result.import.device_id_preview || '未提供'}</li>
             {result.import.has_user_id && (
               <li>User ID：{result.import.user_id_preview}</li>
+            )}
+            {result.import.has_refresh_token && (
+              <li>Refresh Token：已导入</li>
             )}
             {result.import.warnings.map((warning) => (
               <li key={warning} className="text-amber-600 dark:text-amber-400">

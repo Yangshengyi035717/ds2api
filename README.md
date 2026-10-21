@@ -25,6 +25,7 @@
 - **会话管理** — 自动创建和管理 DeepSeek Chat 会话；可选多轮会话复用
 - **多账号池** — 轮询分配、idle/busy/error 状态、健康检查、自动恢复
 - **多提供商账号池** — DeepSeek / z.ai 分类管理，按请求模型自动隔离路由
+- **Kimi 兼容** — Connect JSON 流式协议与 access/refresh token 自动续期
 - **代理池** — 一号一代理、出口绑定、连通性检测与加密存储
 - **Sub2API 上游适配** — 富模型目录、Provider Manifest、价格/倍率配置和同步脚本
 - **客户端限流** — 滑动窗口，按 API key 和 IP 独立计数；响应头 `X-RateLimit-*`
@@ -81,6 +82,21 @@ DeepSeek 的密码登录不是普通 HTTP 表单：登录请求体经 RSA-OAEP �
 
 每次 z.ai 请求会先调用 `POST /api/v1/chats/new` 创建服务端会话，再用返回的
 chat/message UUID 发起 `/api/v2/chat/completions`。
+
+### 添加 Kimi 账号
+
+在 WebUI → 账号池 → 添加账号 → **Kimi 导入** 中复制脚本，并在已登录的
+`www.kimi.com` 页面 Console 运行。Kimi 需要 `access_token` 和
+`refresh_token`；access token 约 15 分钟有效，服务端会自动调用
+`AuthService/RefreshToken` 并持久化轮换后的两个 token。
+
+公开模型映射：
+
+```text
+kimi-k2.6  → k2d6-chat
+kimi-k3    → k3-agent
+kimi-k2.8  → k28-agent-preview
+```
 
 ### 服务器浏览器登录（noVNC）
 
@@ -1087,6 +1103,10 @@ DeepSeek 的 Token 有效期不明确。如果遇到 `401` 或 `403` 响应，�
 | `ZAI_MODEL_NAME` | `"glm-5.3-flash"` | z.ai 公开模型名；`glm-*` 请求自动路由到 z.ai 账号 |
 | `ZAI_MODEL_DISPLAY_NAME` | `"GLM-5.3 Flash"` | `/v1/models` 中 z.ai 模型的显示名称 |
 | `ZAI_UPSTREAM_MODEL` | `"x-preview-l"` | 公开 `glm-5.3-flash` 对应的 z.ai completion 模型 ID |
+| `KIMI_MODEL_NAME` | `"kimi-k2.6"` | Kimi 默认公开模型名 |
+| `KIMI_UPSTREAM_MODEL` | `"k2d6-chat"` | Kimi K2.6 对应的 Web Chat 模型 ID |
+| `QWEN_MODEL_NAME` | `"qwen3.7-max"` | 千问默认公开模型名 |
+| `QWEN_UPSTREAM_MODEL` | `"Qwen3.7-Max"` | 千问 Web Chat 上游模型 ID |
 | `THINKING` | `"auto"` | `auto` / `enabled` / `disabled` — 控制 `thinking_enabled`（原「专家模式」开关，**这里**决定思考与否） |
 | `SEARCH` | `"auto"` | `auto` / `enabled` / `disabled` — 控制 `search_enabled` |
 | `MODEL_ROUTES` | `""` | 可选高级覆盖：JSON 路由表，把 DeepSeek model 名映射到 thinking/search 能力预设。配置后列出其键；不配置时列出 `MODEL_NAME`。z.ai 模型始终根据 `ZAI_MODEL_NAME` 追加 |

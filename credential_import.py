@@ -34,6 +34,7 @@ class ImportedCredentials:
     cookies: str = ""
     device_id: str = ""
     user_id: str = ""
+    refresh_token: str = ""
     provider: str = ""
     source: str = ""
     warnings: list[str] = field(default_factory=list)
@@ -49,6 +50,7 @@ class ImportedCredentials:
             "device_id_preview": _mask(self.device_id),
             "has_user_id": bool(self.user_id),
             "user_id_preview": _mask(self.user_id),
+            "has_refresh_token": bool(self.refresh_token),
             "warnings": list(self.warnings),
         }
 
@@ -119,6 +121,8 @@ def _looks_like_browser_export(data: dict) -> bool:
             "user_id",
             "userid",
             "uid",
+            "refresh_token",
+            "refreshtoken",
             "cookies",
             "cookie",
         }
@@ -142,6 +146,11 @@ def _from_browser_export(data: dict) -> ImportedCredentials:
     )
     device_id = _first_string(data, "device_id", "deviceId", "x_device_id")
     user_id = _first_string(data, "user_id", "userId", "uid")
+    refresh_token = _first_string(
+        data,
+        "refresh_token",
+        "refreshToken",
+    )
     provider = _first_string(data, "provider", "account_type")
     warnings: list[str] = []
     if not cookies:
@@ -156,6 +165,7 @@ def _from_browser_export(data: dict) -> ImportedCredentials:
         cookies=cookies,
         device_id=_normalize_device_id(device_id),
         user_id=_normalize_identifier(user_id),
+        refresh_token=_normalize_refresh_token(refresh_token),
         provider=provider,
         source="browser-export",
         warnings=warnings,
@@ -329,6 +339,15 @@ def _normalize_identifier(value: Any) -> str:
         return ""
     value = value.strip()
     if not value or len(value) > 128 or any(ch.isspace() for ch in value):
+        return ""
+    return value
+
+
+def _normalize_refresh_token(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    value = value.strip()
+    if not value or len(value) > 8192 or any(ch.isspace() for ch in value):
         return ""
     return value
 

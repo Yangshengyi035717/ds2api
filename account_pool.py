@@ -19,8 +19,12 @@ from typing import Optional
 from dotenv import load_dotenv
 from adapter import DeepSeekAdapter
 from zai_adapter import ZaiAdapter, zai_user_id_from_token
+from kimi_adapter import KimiAdapter, kimi_device_id_from_token, kimi_user_id_from_token
+from qwen_adapter import QwenAdapter
 from provider_registry import (
     PROVIDER_DEEPSEEK,
+    PROVIDER_KIMI,
+    PROVIDER_QWEN,
     PROVIDER_ZAI,
     normalize_provider,
     provider_label,
@@ -74,9 +78,10 @@ def _credential_fingerprint(
     cookies: str,
     provider: str = PROVIDER_DEEPSEEK,
     user_id: str = "",
+    refresh_token: str = "",
 ) -> str:
     return hashlib.sha256(
-        f"{provider}\0{user_id}\0{token}\0{cookies}".encode()
+        f"{provider}\0{user_id}\0{refresh_token}\0{token}\0{cookies}".encode()
     ).hexdigest()
 
 
@@ -109,6 +114,10 @@ class Account:
     email: str = ""
     provider: str = PROVIDER_DEEPSEEK
     user_id: str = ""          # z.ai signature user id
+    refresh_token: str = ""     # Kimi rotating refresh token
+    xsrf_token: str = ""
+    session_id: str = ""
+    topic_id: str = ""
     device_id: str = ""         # browser device that owns the token (optional)
     id: str = field(default_factory=_account_id)
     source: str = "file"       # persisted account
@@ -120,10 +129,13 @@ class Account:
     error_count: int = 0
     last_error: str = ""
     last_used: float = 0.0
-    _adapter: Optional[DeepSeekAdapter | ZaiAdapter] = field(default=None, repr=False)
+    _adapter: Optional[DeepSeekAdapter | ZaiAdapter | KimiAdapter | QwenAdapter] = field(
+        default=None,
+        repr=False,
+    )
 
     @property
-    def adapter(self) -> DeepSeekAdapter | ZaiAdapter:
+    def adapter(self) -> DeepSeekAdapter | ZaiAdapter | KimiAdapter | QwenAdapter:
         if self._adapter is None:
             proxy_url = self.proxy.strip()
             if not proxy_url and self.proxy_id:
@@ -137,6 +149,26 @@ class Account:
                     proxy=proxy_url or None,
                     device_id=self.device_id,
                     user_id=self.user_id,
+                )
+            elif self.provider == PROVIDER_KIMI:
+                self._adapter = KimiAdapter(
+                    token=self.token,
+                    refresh_token=self.refresh_token,
+                    cookies=self.cookies,
+                    proxy=proxy_url or None,
+                    device_id=self.device_id,
+                    user_id=self.user_id,
+                )
+            elif self.provider == PROVIDER_QWEN:
+                self._adapter = QwenAdapter(
+                    token=self.token,
+                    cookies=self.cookies,
+                    device_id=self.device_id,
+                    user_id=self.user_id,
+                    xsrf_token=self.xsrf_token,
+                    session_id=self.session_id,
+                    topic_id=self.topic_id,
+                    proxy=proxy_url or None,
                 )
             else:
                 self._adapter = DeepSeekAdapter(
@@ -154,6 +186,7 @@ class Account:
             self.cookies,
             self.provider,
             self.user_id,
+            self.refresh_token,
         )
 
     def to_dict(self) -> dict:
@@ -177,6 +210,12 @@ class Account:
             "has_device_id": bool(self.device_id),
             "user_id_preview": _mask_secret(self.user_id, 8, 4),
             "has_user_id": bool(self.user_id),
+            "refresh_token_preview": _mask_secret(self.refresh_token, 8, 4),
+            "has_refresh_token": bool(self.refresh_token),
+            "xsrf_token_preview": _mask_secret(self.xsrf_token, 8, 4),
+            "has_xsrf_token": bool(self.xsrf_token),
+            "session_id": self.session_id,
+            "topic_id": self.topic_id,
             "credential_fingerprint": self.fingerprint[:12],
             "proxy_id": self.proxy_id,
             "proxy_label": proxy_entry.label if proxy_entry else "",
@@ -190,6 +229,10 @@ class Account:
             "email": self.email,
             "provider": self.provider,
             "user_id": self.user_id,
+            "refresh_token": self.refresh_token,
+            "xsrf_token": self.xsrf_token,
+            "session_id": self.session_id,
+            "topic_id": self.topic_id,
             "token": self.token,
             "cookies": self.cookies,
             "device_id": self.device_id,
@@ -222,6 +265,14 @@ class AccountPool:
         if acct.provider == PROVIDER_ZAI and not acct.user_id:
             acct.state = "error"
             acct.last_error = "z.ai account is missing user_id"
+        if acct.provider == PROVIDER_KIMI and not acct.refresh_token:
+            acct.state = "error"
+            acct.last_error = "Kimi account is missing refresh_token"
+        if acct.provider == PROVIDER_QWEN and (
+            not acct.cookies or not acct.session_id
+        ):
+            acct.state = "error"
+            acct.last_error = "Qianwen account is missing cookies/session_id"
         if acct.proxy_id:
             proxy_entry = get_proxy_pool().get_by_id(acct.proxy_id)
             if proxy_entry is None or not proxy_entry.enabled:
@@ -269,11 +320,15 @@ class AccountPool:
                 continue
             created_at = int(item.get("created_at") or _now())
             updated_at = int(item.get("updated_at") or created_at)
-            self._append_loaded(Account(
+            account_value = Account(
                 id=str(item.get("id") or _account_id()),
                 email=str(item.get("email") or ""),
                 provider=_safe_provider(item.get("provider")),
                 user_id=str(item.get("user_id") or "").strip(),
+                refresh_token=str(item.get("refresh_token") or "").strip(),
+                xsrf_token=str(item.get("xsrf_token") or "").strip(),
+                session_id=str(item.get("session_id") or "").strip(),
+                topic_id=str(item.get("topic_id") or "").strip(),
                 token=token,
                 cookies=cookies,
                 device_id=str(item.get("device_id") or "").strip(),
@@ -282,7 +337,17 @@ class AccountPool:
                 source="file",
                 created_at=created_at,
                 updated_at=updated_at,
-            ))
+            )
+            if account_value.provider == PROVIDER_KIMI:
+                account_value.user_id = (
+                    account_value.user_id
+                    or kimi_user_id_from_token(account_value.token)
+                )
+                account_value.device_id = (
+                    account_value.device_id
+                    or kimi_device_id_from_token(account_value.token)
+                )
+            self._append_loaded(account_value)
 
     def _ensure_store_dir(self):
         self._store_path.parent.mkdir(parents=True, exist_ok=True)
@@ -333,6 +398,10 @@ class AccountPool:
         device_id: str = "",
         provider: str = PROVIDER_DEEPSEEK,
         user_id: str = "",
+        refresh_token: str = "",
+        xsrf_token: str = "",
+        session_id: str = "",
+        topic_id: str = "",
     ) -> Account:
         token = (token or "").strip()
         cookies = (cookies or "").strip()
@@ -342,13 +411,26 @@ class AccountPool:
         user_id = (user_id or "").strip()
         if provider == PROVIDER_ZAI and not user_id:
             user_id = zai_user_id_from_token(token)
-        if not token:
+        if provider == PROVIDER_KIMI:
+            user_id = user_id or kimi_user_id_from_token(token)
+            device_id = device_id or kimi_device_id_from_token(token)
+        if not token and provider != PROVIDER_QWEN:
             raise ValueError("Token is required")
         if provider == PROVIDER_ZAI and not user_id:
             raise ValueError("z.ai 账号需要 User ID")
+        if provider == PROVIDER_KIMI and not refresh_token:
+            raise ValueError("Kimi 账号需要 refresh_token")
+        if provider == PROVIDER_QWEN and (not cookies or not session_id):
+            raise ValueError("千问账号需要 cookies 和 session_id")
 
         with self._lock:
-            fp = _credential_fingerprint(token, cookies, provider, user_id)
+            fp = _credential_fingerprint(
+                token,
+                cookies,
+                provider,
+                user_id,
+                refresh_token,
+            )
             if any(a.fingerprint == fp for a in self._accounts):
                 raise ValueError("Account already exists")
             proxy_id = self._validate_proxy_binding_locked(proxy_id)
@@ -363,6 +445,10 @@ class AccountPool:
                 device_id=device_id,
                 provider=provider,
                 user_id=user_id,
+                refresh_token=refresh_token,
+                xsrf_token=xsrf_token,
+                session_id=session_id,
+                topic_id=topic_id,
                 source="file",
                 proxy_id=proxy_id,
                 created_at=now,
@@ -385,6 +471,8 @@ class AccountPool:
         self,
         account_id: str,
         *,
+        token: str | None = None,
+        refresh_token: str | None = None,
         cookies: str | None = None,
         device_id: str | None = None,
     ) -> Account:
@@ -397,14 +485,43 @@ class AccountPool:
             new_device_id = (
                 acct.device_id if device_id is None else device_id.strip()
             )
-            if new_cookies == acct.cookies and new_device_id == acct.device_id:
+            new_token = acct.token if token is None else token.strip()
+            new_refresh_token = (
+                acct.refresh_token
+                if refresh_token is None
+                else refresh_token.strip()
+            )
+            if (
+                new_cookies == acct.cookies
+                and new_device_id == acct.device_id
+                and new_token == acct.token
+                and new_refresh_token == acct.refresh_token
+            ):
                 return acct
+            acct.token = new_token
+            acct.refresh_token = new_refresh_token
             acct.cookies = new_cookies
             acct.device_id = new_device_id
             acct.updated_at = _now()
             acct._adapter = None
             self._save_persisted_accounts_locked()
             return acct
+
+    def persist_adapter_tokens(self, acct: Account) -> bool:
+        """Persist Kimi access/refresh rotation from a live adapter."""
+        adapter = acct._adapter
+        access_token = str(getattr(adapter, "access_token", "") or "").strip()
+        refresh_token = str(getattr(adapter, "refresh_token", "") or "").strip()
+        if not access_token or not refresh_token:
+            return False
+        if access_token == acct.token and refresh_token == acct.refresh_token:
+            return False
+        self.update_keepalive_credentials(
+            acct.id,
+            token=access_token,
+            refresh_token=refresh_token,
+        )
+        return True
 
     def find_by_token(
         self,
@@ -432,7 +549,11 @@ class AccountPool:
                proxy_id: str | None = None,
                device_id: str | None = None,
                provider: str | None = None,
-               user_id: str | None = None) -> Account:
+               user_id: str | None = None,
+               refresh_token: str | None = None,
+               xsrf_token: str | None = None,
+               session_id: str | None = None,
+               topic_id: str | None = None) -> Account:
         with self._lock:
             acct = next((a for a in self._accounts if a.id == account_id), None)
             if acct is None:
@@ -451,14 +572,35 @@ class AccountPool:
             new_user_id = (
                 acct.user_id if user_id is None else user_id.strip()
             )
+            new_refresh_token = (
+                acct.refresh_token
+                if refresh_token is None
+                else refresh_token.strip()
+            )
+            new_xsrf_token = (
+                acct.xsrf_token if xsrf_token is None else xsrf_token.strip()
+            )
+            new_session_id = (
+                acct.session_id if session_id is None else session_id.strip()
+            )
+            new_topic_id = (
+                acct.topic_id if topic_id is None else topic_id.strip()
+            )
+            if new_provider == PROVIDER_KIMI and not new_refresh_token:
+                raise ValueError("Kimi 账号需要 refresh_token")
             if new_provider == PROVIDER_ZAI and not new_user_id:
                 new_user_id = zai_user_id_from_token(new_token)
+            if new_provider == PROVIDER_KIMI:
+                new_user_id = new_user_id or kimi_user_id_from_token(new_token)
+                new_device_id = (
+                    new_device_id or kimi_device_id_from_token(new_token)
+                )
             new_proxy_id = (
                 acct.proxy_id
                 if proxy_id is None
                 else self._validate_proxy_binding_locked(proxy_id, ignore_account_id=account_id)
             )
-            if not new_token:
+            if not new_token and new_provider != PROVIDER_QWEN:
                 raise ValueError("Token cannot be empty")
             if new_provider == PROVIDER_ZAI and not new_user_id:
                 raise ValueError("z.ai 账号需要 User ID")
@@ -468,6 +610,7 @@ class AccountPool:
                 new_cookies,
                 new_provider,
                 new_user_id,
+                new_refresh_token,
             )
             if any(a.id != account_id and a.fingerprint == new_fp for a in self._accounts):
                 raise ValueError("Account already exists")
@@ -478,6 +621,10 @@ class AccountPool:
                 or new_device_id != acct.device_id
                 or new_provider != acct.provider
                 or new_user_id != acct.user_id
+                or new_refresh_token != acct.refresh_token
+                or new_xsrf_token != acct.xsrf_token
+                or new_session_id != acct.session_id
+                or new_topic_id != acct.topic_id
             )
             proxy_changed = new_proxy_id != acct.proxy_id
             acct.token = new_token
@@ -486,6 +633,10 @@ class AccountPool:
             acct.device_id = new_device_id
             acct.provider = new_provider
             acct.user_id = new_user_id
+            acct.refresh_token = new_refresh_token
+            acct.xsrf_token = new_xsrf_token
+            acct.session_id = new_session_id
+            acct.topic_id = new_topic_id
             acct.proxy_id = new_proxy_id
             acct.updated_at = _now()
             if credentials_changed or proxy_changed:
@@ -684,6 +835,7 @@ class AccountPool:
                 adapter.check_health()
             else:
                 adapter.create_session()
+            self.persist_adapter_tokens(acct)
             return True
         except Exception as e:
             with self._lock:

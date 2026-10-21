@@ -21,7 +21,12 @@ from keepalive_store import (
     STATE_RUNNING,
 )
 from logger import get_logger
-from provider_registry import PROVIDER_ZAI, normalize_provider
+from provider_registry import (
+    PROVIDER_KIMI,
+    PROVIDER_QWEN,
+    PROVIDER_ZAI,
+    normalize_provider,
+)
 from proxy_pool import get_proxy_pool
 
 log = get_logger("keepalive_scheduler")
@@ -73,6 +78,12 @@ class KeepaliveScheduler:
             ),
             PROVIDER_ZAI: threading.BoundedSemaphore(
                 max(1, _env_int("KEEPALIVE_ZAI_CONCURRENCY", 2))
+            ),
+            PROVIDER_KIMI: threading.BoundedSemaphore(
+                max(1, _env_int("KEEPALIVE_KIMI_CONCURRENCY", 2))
+            ),
+            PROVIDER_QWEN: threading.BoundedSemaphore(
+                max(1, _env_int("KEEPALIVE_QWEN_CONCURRENCY", 2))
             ),
         }
 
@@ -162,17 +173,26 @@ class KeepaliveScheduler:
         error = ""
         try:
             with self._provider_slots[provider]:
-                result, cookies, device_id = self._probe(acct, provider)
+                result, cookies, device_id, token, refresh_token = self._probe(
+                    acct, provider
+                )
             status = result.status
             error = result.message
             if result.valid:
                 if (
                     cookies != acct.cookies
                     or (device_id and device_id != acct.device_id)
+                    or (token and token != acct.token)
+                    or (
+                        refresh_token
+                        and refresh_token != acct.refresh_token
+                    )
                 ):
                     self.pool.update_keepalive_credentials(
                         account_id,
                         cookies=cookies if cookies != acct.cookies else None,
+                        token=token,
+                        refresh_token=refresh_token,
                         device_id=(
                             device_id
                             if device_id and device_id != acct.device_id
@@ -250,14 +270,20 @@ class KeepaliveScheduler:
             },
         )
 
-    def _probe(self, acct, provider: str) -> tuple[keepalive.ProbeResult, str, str]:
+    def _probe(
+        self,
+        acct,
+        provider: str,
+    ) -> tuple[keepalive.ProbeResult, str, str, str, str]:
         token = keepalive._normalize_token(acct.token)
-        if not token:
+        if not token and provider != PROVIDER_QWEN:
             code = 401 if provider == PROVIDER_ZAI else 40003
             return (
                 keepalive.ProbeResult(0, False, code, "no token"),
                 acct.cookies,
                 acct.device_id,
+                acct.token,
+                acct.refresh_token,
             )
 
         device_id = (acct.device_id or "").strip()
@@ -274,6 +300,64 @@ class KeepaliveScheduler:
         if not proxy_url and acct.proxy_id:
             proxy_url = get_proxy_pool().resolve_url(acct.proxy_id) or ""
         proxies = {"all": proxy_url} if proxy_url else None
+        if provider == PROVIDER_KIMI:
+            from kimi_adapter import KimiAdapter, KimiAuthError
+
+            try:
+                adapter = KimiAdapter(
+                    token=acct.token,
+                    refresh_token=acct.refresh_token,
+                    cookies=acct.cookies,
+                    proxy=proxy_url or None,
+                    device_id=device_id,
+                    user_id=acct.user_id,
+                )
+                adapter.check_health()
+                return (
+                    keepalive.ProbeResult(200, True, 0, ""),
+                    acct.cookies,
+                    adapter.device_id,
+                    adapter.access_token,
+                    adapter.refresh_token,
+                )
+            except KimiAuthError as exc:
+                return (
+                    keepalive.ProbeResult(401, False, 401, str(exc)),
+                    acct.cookies,
+                    device_id,
+                    acct.token,
+                    acct.refresh_token,
+                )
+        if provider == PROVIDER_QWEN:
+            from qwen_adapter import QwenAdapter, QwenAuthError
+
+            try:
+                adapter = QwenAdapter(
+                    token=acct.token,
+                    cookies=acct.cookies,
+                    proxy=proxy_url or None,
+                    device_id=device_id,
+                    user_id=acct.user_id,
+                    xsrf_token=acct.xsrf_token,
+                    session_id=acct.session_id,
+                    topic_id=acct.topic_id,
+                )
+                adapter.check_health()
+                return (
+                    keepalive.ProbeResult(200, True, 0, ""),
+                    acct.cookies,
+                    device_id,
+                    acct.token,
+                    acct.refresh_token,
+                )
+            except QwenAuthError as exc:
+                return (
+                    keepalive.ProbeResult(401, False, 401, str(exc)),
+                    acct.cookies,
+                    device_id,
+                    acct.token,
+                    acct.refresh_token,
+                )
         impersonate = (
             os.environ.get("ZAI_IMPERSONATE", "chrome150")
             if provider == PROVIDER_ZAI
@@ -301,7 +385,13 @@ class KeepaliveScheduler:
                     acct.cookies,
                     keepalive._cookie_header(session.cookies.jar),
                 )
-            return result, merged, device_id if generated_device else acct.device_id
+            return (
+                result,
+                merged,
+                device_id if generated_device else acct.device_id,
+                acct.token,
+                acct.refresh_token,
+            )
         finally:
             session.close()
 

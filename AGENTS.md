@@ -33,6 +33,8 @@
 - SSE 使用 `{"type":"chat:completion","data":{...}}`；`phase=thinking|answer` 分别映射推理与正文，`phase=done/done=true` 结束。
 - 抓包 body 使用 v2 消息字段，因此 `id`（assistant placeholder）与 `current_user_message_id` 必须是不同 UUID。
 - `glm-5.3-flash` 是公开别名；z.ai 模型列表中显示名 `GLM-5.3-Flash` 的实际 ID 是 `x-preview-l`。
+- Kimi 使用 `application/connect+json`：请求是单帧 JSON，响应为 5 字节头（flags + big-endian length）+ JSON 事件流；正文与推理分别来自 `block.text.content` 和 `block.think.content`。
+- Kimi access token 有效期约 15 分钟，refresh token 必须持久化；`AuthService/RefreshToken` 返回轮换后的 access/refresh token。当前模型映射为 `kimi-k2.6 → k2d6-chat`、`kimi-k3 → k3-agent`、`kimi-k2.8 → k28-agent-preview`。
 
 **代码落点**
 
