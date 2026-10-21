@@ -1,5 +1,9 @@
 # DeepSeek / z.ai Session Keepalive (protocol-based)
 
+> New deployments should use the in-process multi-account scheduler enabled by
+> `KEEPALIVE_ENABLED=true`. This standalone worker remains as a compatibility
+> option for one account and must not run at the same time as the scheduler.
+
 Keeps a DeepSeek Chat or z.ai web session alive **on the server** and pushes
 refreshed cookies back into the DS2API account pool — without a browser.
 The worker reads `provider` from the account and selects the matching probe.

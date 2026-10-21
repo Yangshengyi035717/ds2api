@@ -16,11 +16,43 @@ from proxy_pool import ProxyPool, normalize_proxy_url, proxy_preview
 
 def test_proxy_url_validation_and_masking():
     assert normalize_proxy_url("http://user:pass@127.0.0.1:8080") == "http://user:pass@127.0.0.1:8080"
+    assert normalize_proxy_url("127.0.0.1:8080") == "http://127.0.0.1:8080"
+    assert (
+        normalize_proxy_url("proxy.example:9000:user:p@ss:word")
+        == "http://user:p%40ss%3Aword@proxy.example:9000"
+    )
+    assert (
+        normalize_proxy_url("user:pass@proxy.example:9000")
+        == "http://user:pass@proxy.example:9000"
+    )
     assert proxy_preview("socks5://user:pass@proxy.example:1080") == "socks5://***:***@proxy.example:1080"
     with pytest.raises(ValueError):
         normalize_proxy_url("ftp://proxy.example:21")
     with pytest.raises(ValueError):
         normalize_proxy_url("not-a-proxy")
+
+
+def test_proxy_pool_bulk_imports_bare_lines(tmp_path):
+    pool = ProxyPool(tmp_path / "proxies.json")
+
+    result = pool.add_many(
+        "\n".join([
+            "proxy-a.example:8000:user-a:pass-a",
+            "proxy-b.example:8001",
+            "",
+            "proxy-a.example:8000:user-a:pass-a",
+            "not-a-proxy",
+        ])
+    )
+
+    assert result["added_count"] == 2
+    assert result["skipped_count"] == 1
+    assert result["error_count"] == 1
+    assert result["errors"][0]["line"] == 5
+    assert {entry.url for entry in result["added"]} == {
+        "http://user-a:pass-a@proxy-a.example:8000",
+        "http://proxy-b.example:8001",
+    }
 
 
 def test_proxy_pool_persists_and_rejects_duplicates(tmp_path):
@@ -176,3 +208,27 @@ def test_proxy_admin_crud_and_delete_guard(proxy_admin_client):
     account_pool.update(account_pool.get_all()[0]["id"], proxy_id="")
     removed = client.delete(f"/admin/api/proxies/{proxy['id']}", headers=headers)
     assert removed.status_code == 200
+
+
+def test_proxy_admin_bulk_import_accepts_bare_formats(proxy_admin_client):
+    client, proxy_pool, _, token = proxy_admin_client
+    headers = {"Authorization": f"Bearer {token}"}
+
+    response = client.post(
+        "/admin/api/proxies/import",
+        headers=headers,
+        json={
+            "payload": (
+                "proxy-a.example:8000:user-a:pass-a\n"
+                "proxy-b.example:8001\n"
+                "bad-value\n"
+            ),
+            "enabled": True,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["added_count"] == 2
+    assert body["error_count"] == 1
+    assert proxy_pool.list_entries()[0].url.startswith("http://user-a:")

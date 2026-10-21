@@ -5,6 +5,7 @@ the thinking / search capabilities (DeepSeek merged its quick and expert modes,
 so ``thinking_enabled`` is the only model-behaviour switch left).
 """
 import json
+import atexit
 import os
 import sys
 import threading
@@ -88,6 +89,7 @@ from provider_registry import (
     zai_upstream_model,
     zai_model_name,
 )
+from keepalive_scheduler import start_scheduler
 from zai_adapter import ZaiAuthError
 
 load_dotenv()
@@ -375,6 +377,11 @@ pool = get_pool()
 
 # Start the rolling history sampler (v3 webui dashboard charts).
 start_sampler(get_stats())
+
+# The multi-account keepalive scheduler is in-process so it shares the same
+# AccountPool lock and cannot lose cookie updates to a second writer.
+_keepalive_scheduler = start_scheduler(pool)
+atexit.register(_keepalive_scheduler.stop)
 
 if pool.count() == 0:
     log.warning(

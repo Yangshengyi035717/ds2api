@@ -78,13 +78,16 @@ export function ProxyForm({ proxy, onSaved, onCancel }: ProxyFormProps) {
           id="proxy-url"
           value={url}
           onChange={(event) => setUrl(event.target.value)}
-          placeholder={isEdit ? '留空则不修改当前地址' : 'http://user:pass@host:port'}
+          placeholder={isEdit ? '留空则不修改当前地址' : 'host:port:username:password'}
           autoComplete="off"
           className="font-mono text-xs"
         />
         <p className="text-[11px] leading-relaxed text-muted-foreground">
           支持 HTTP、HTTPS、SOCKS4、SOCKS5、SOCKS5H。地址可能包含代理账号密码，
-          界面只显示脱敏预览；启用凭据加密时会同时加密代理地址。
+          界面只显示脱敏预览；启用凭据加密时会同时加密代理地址。可填写标准 URL、
+          <code className="mx-1 font-mono">host:port</code>
+          或
+          <code className="mx-1 font-mono">host:port:username:password</code>。
         </p>
       </div>
 

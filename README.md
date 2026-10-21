@@ -104,7 +104,8 @@ docker compose up -d --build
 
 ### 协议保活（DeepSeek / z.ai）
 
-`keepalive/` worker 会从账号详情读取 `provider` 并自动分流：
+DS2API 内置多账号 `KeepaliveScheduler`，会为账号池中的每个账号创建独立
+Job，并按 `provider` 自动分流：
 
 - DeepSeek：周期调用 `GET /api/v0/users/current`
 - z.ai：周期调用 `GET /api/v1/chats/?page=1&type=all&channel=zai-web`
@@ -114,9 +115,22 @@ docker compose up -d --build
 回写；z.ai 优先使用该账号绑定的代理出口。`401/403`（z.ai）或
 `40003`（DeepSeek）判定为登录失效，并停止等待人工重新导入。
 
-生产环境建议在 WebUI 的 `.env` 与 `keepalive/.env` 中配置相同的
-`KEEPALIVE_SHARED_SECRET`。该密钥只允许读取指定账号凭据和更新
-Cookie/Device ID，不会随 DS2API 重启失效；`DS2API_ADMIN_TOKEN` 仅作为兼容回退。
+启用进程内调度器：
+
+```env
+KEEPALIVE_ENABLED=true
+KEEPALIVE_TICK_SECS=30
+KEEPALIVE_GLOBAL_CONCURRENCY=4
+```
+
+Job、租约、下次执行时间、退避和待重登状态保存在
+`data/keepalive.sqlite3`。WebUI 账号池支持逐账号启停、立即检测，以及按
+DeepSeek / z.ai 批量启用、暂停和检测。
+
+`keepalive/` 下的单账号 Docker worker 保留为兼容模式。启用
+`KEEPALIVE_ENABLED=true` 后应停止旧的 `dsapi-keepalive` 容器，避免两个
+调度器重复探活。单账号 worker 的 `KEEPALIVE_SHARED_SECRET` 仍可作为
+独立部署方案使用。
 
 如果服务器机房 IP 被上游 CDN 拦截（页面显示 `403 Request blocked`），
 在 `.env` 设置浏览器出口代理后重启 sidecar：
@@ -333,6 +347,8 @@ python -m uvicorn server:app --host 127.0.0.1 --port 8080
 
 WebUI「代理池」支持 HTTP / HTTPS / SOCKS4 / SOCKS5 / SOCKS5H 代理：
 
+- 支持标准 URL、`host:port` 和 `host:port:username:password` 裸格式
+- 代理池页面支持按行批量导入，重复项自动跳过
 - 每个代理默认只能绑定一个账号，避免多个账号共用同一出口 IP
 - 账号在「账号池 → 编辑账号」中选择代理，绑定关系持久化到 `data/accounts.json`
 - 代理地址持久化到 `data/proxies.json`；开启 `DEEPSEEK_ENCRYPTION_KEY` 后代理 URL 会与账号凭证一起加密
@@ -1046,6 +1062,22 @@ DeepSeek 的 Token 有效期不明确。如果遇到 `401` 或 `403` 响应，�
 | `ACCOUNT_STORE_PATH` | `data/accounts.json` | 否 | 面板持久化账号保存路径 |
 | `PROXY_STORE_PATH` | `data/proxies.json` | 否 | 代理池持久化路径 |
 | `PROXY_CHECK_URL` | `https://chat.deepseek.com/` | 否 | 代理池连通性检测目标 URL |
+
+### 多账号保活
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `KEEPALIVE_ENABLED` | `false` | 启用进程内多账号调度器 |
+| `KEEPALIVE_STORE_PATH` | `data/keepalive.sqlite3` | Job、租约和退避数据库 |
+| `KEEPALIVE_TICK_SECS` | `30` | 调度扫描周期 |
+| `KEEPALIVE_GLOBAL_CONCURRENCY` | `4` | 全局并发上限 |
+| `KEEPALIVE_DEEPSEEK_CONCURRENCY` | `2` | DeepSeek 并发上限 |
+| `KEEPALIVE_ZAI_CONCURRENCY` | `2` | z.ai 并发上限 |
+| `KEEPALIVE_DEEPSEEK_INTERVAL` | `900` | DeepSeek 默认周期（秒） |
+| `KEEPALIVE_ZAI_INTERVAL` | `900` | z.ai 默认周期（秒） |
+| `KEEPALIVE_RETRY_BASE_SECS` | `60` | 临时失败初始退避 |
+| `KEEPALIVE_RETRY_MAX_SECS` | `3600` | 最大退避 |
+| `KEEPALIVE_SHARED_SECRET` | `""` | 独立单账号 worker 的共享密钥 |
 
 ### 模型行为
 

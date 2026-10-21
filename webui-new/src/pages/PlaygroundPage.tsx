@@ -29,34 +29,21 @@ interface ApiMessage {
   content: string
 }
 
-/**
- * Display labels for the model dropdown.
- *
- * DeepSeek merged its quick/expert modes: the upstream serves ONE chat model
- * and normalises `model_type` to "default". This proxy therefore serves a
- * single model too — /v1/models lists just MODEL_NAME — and whether it thinks
- * is configured server-side with THINKING (=auto/enabled/disabled).
- *
- * The dropdown still exists because the `model` field must be sent, and because
- * an operator may declare extra names via MODEL_ROUTES; the labels below only
- * decorate the two default names when they are present.
- */
+/** Display labels for provider-hosted models returned by /v1/models. */
 const MODEL_LABELS: Record<string, string> = {
-  'deepseek-chat': 'deepseek-chat（唯一模型）',
-  'deepseek-reasoner': 'deepseek-reasoner（deepseek-chat 的旧别名）',
+  'deepseek-chat': 'DeepSeek Chat · deepseek',
+  'glm-5.3-flash': 'GLM-5.3 Flash · z.ai',
+  'deepseek-reasoner': 'DeepSeek Reasoner（旧别名）',
 }
 
 export default function PlaygroundPage() {
   const token = useAuthStore((s) => s.token)
   const { toast } = useToast()
 
-  // Request parameters — these map to the fields the backend actually
-  // forwards to DeepSeek (see server.py / adapter.py):
-  //   model          -> must be sent, but it does NOT select a different
-  //                     upstream model: there is only one (MODEL_NAME). Names
-  //                     declared in MODEL_ROUTES only preselect capabilities.
-  //   thinking_mode  -> DeepSeek thinking_enabled  ← the real "expert" switch
-  //   search_enabled -> DeepSeek search_enabled
+  // Request parameters are forwarded by provider:
+  //   model          -> DeepSeek model or z.ai public alias
+  //   thinking_mode  -> provider thinking/reasoning switch
+  //   search_enabled -> provider web-search switch
   // temperature / top_p / max_tokens are ignored by the backend, so they
   // are intentionally not offered here.
   const [model, setModel] = useState('')
@@ -208,9 +195,9 @@ export default function PlaygroundPage() {
               <Label>模型</Label>
               <ModelSelector value={model} onChange={setModel} labels={MODEL_LABELS} />
               <p className="text-[11px] text-muted-foreground">
-                只有一个模型；名字仅用于 <code className="font-mono">/v1/models</code>
-                与 <code className="font-mono">MODEL_ROUTES</code> 的预设匹配。是否思考由下面的开关（或服务端
-                <code className="font-mono"> THINKING</code>）决定
+                模型列表来自 <code className="font-mono">/v1/models</code>。
+                DeepSeek 与 z.ai 会自动路由到对应账号池，是否思考由下面的开关
+                （或服务端 <code className="font-mono">THINKING</code>）决定。
               </p>
             </div>
 
@@ -231,7 +218,7 @@ export default function PlaygroundPage() {
                 <Label htmlFor="thinking">思考模式</Label>
                 <p className="text-[11px] text-muted-foreground">
                   对应 DeepSeek <code className="font-mono">thinking_enabled</code>
-                  ，即原「专家模式」
+                  / z.ai <code className="font-mono">enable_thinking</code>
                 </p>
               </div>
               <Switch
@@ -246,6 +233,7 @@ export default function PlaygroundPage() {
                 <Label htmlFor="search">联网搜索</Label>
                 <p className="text-[11px] text-muted-foreground">
                   对应 DeepSeek <code className="font-mono">search_enabled</code>
+                  / z.ai web search
                 </p>
               </div>
               <Switch id="search" checked={search} onCheckedChange={setSearch} />

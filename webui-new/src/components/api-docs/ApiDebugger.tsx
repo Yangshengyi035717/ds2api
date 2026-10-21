@@ -31,9 +31,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { CodeBlock } from '@/components/api-docs/CodeBlock'
 import { useToast } from '@/hooks/use-toast'
+import { useApi } from '@/hooks/useApi'
 import { consumeSse } from '@/lib/sse'
 import { formatLatency } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth'
+import type { ModelsResponse } from '@/lib/types'
 
 type DebugEndpoint = 'models' | 'chat' | 'responses' | 'messages'
 type JsonObject = Record<string, unknown>
@@ -265,6 +267,7 @@ interface ApiDebuggerProps {
 
 export function ApiDebugger({ defaultModel = 'deepseek-chat' }: ApiDebuggerProps) {
   const adminToken = useAuthStore((state) => state.token)
+  const { data: modelData } = useApi<ModelsResponse>('/v1/models')
   const { toast } = useToast()
   const controllerRef = useRef<AbortController | null>(null)
 
@@ -560,13 +563,30 @@ export function ApiDebugger({ defaultModel = 'deepseek-chat' }: ApiDebuggerProps
 
         <div className="space-y-1.5">
           <Label htmlFor="debug-model">模型</Label>
-          <Input
-            id="debug-model"
-            value={model}
-            onChange={(event) => setModel(event.target.value)}
-            placeholder="deepseek-chat"
-            disabled={busy}
-          />
+          {modelData?.data.length ? (
+            <Select value={model} onValueChange={setModel} disabled={busy}>
+              <SelectTrigger id="debug-model">
+                <SelectValue placeholder="选择模型…" />
+              </SelectTrigger>
+              <SelectContent>
+                {modelData.data.map((item) => (
+                  <SelectItem key={item.id} value={item.id}>
+                    {item.display_name
+                      ? `${item.display_name} · ${item.provider || item.owned_by || 'model'}`
+                      : item.id}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : (
+            <Input
+              id="debug-model"
+              value={model}
+              onChange={(event) => setModel(event.target.value)}
+              placeholder="deepseek-chat 或 glm-5.3-flash"
+              disabled={busy}
+            />
+          )}
         </div>
 
         {endpoint !== 'models' && (

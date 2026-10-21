@@ -7,6 +7,7 @@ import {
   RefreshCw,
   ShieldCheck,
   Trash2,
+  Upload,
 } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { ProxyForm } from '@/components/proxies/ProxyForm'
@@ -23,6 +24,9 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
+import { Textarea } from '@/components/ui/textarea'
 import {
   Dialog,
   DialogContent,
@@ -51,6 +55,10 @@ export default function ProxyPoolPage() {
   const [editing, setEditing] = useState<ProxyConfig | null>(null)
   const [deleting, setDeleting] = useState<ProxyConfig | null>(null)
   const [testing, setTesting] = useState<string | null>(null)
+  const [bulkOpen, setBulkOpen] = useState(false)
+  const [bulkText, setBulkText] = useState('')
+  const [bulkEnabled, setBulkEnabled] = useState(true)
+  const [bulkBusy, setBulkBusy] = useState(false)
 
   const proxies = data?.proxies ?? []
 
@@ -89,6 +97,35 @@ export default function ProxyPoolPage() {
     }
   }
 
+  const handleBulkImport = async () => {
+    if (bulkBusy || !bulkText.trim()) return
+    setBulkBusy(true)
+    try {
+      const result = await post<{
+        added_count: number
+        skipped_count: number
+        error_count: number
+        errors: Array<{ line: number; error: string }>
+      }>('/admin/api/proxies/import', {
+        payload: bulkText,
+        enabled: bulkEnabled,
+      })
+      toast({
+        title: '代理批量导入完成',
+        description: `新增 ${result.added_count}，跳过 ${result.skipped_count}，失败 ${result.error_count}`,
+        variant: result.error_count > 0 ? 'default' : 'success',
+      })
+      setBulkOpen(false)
+      setBulkText('')
+      refresh()
+    } catch (e) {
+      const message = e instanceof ApiCallError ? e.message : String(e)
+      toast({ title: '批量导入失败', description: message, variant: 'destructive' })
+    } finally {
+      setBulkBusy(false)
+    }
+  }
+
   return (
     <div className="space-y-5 animate-fade-in">
       <PageHeader
@@ -99,6 +136,10 @@ export default function ProxyPoolPage() {
             <Button variant="outline" onClick={refresh} disabled={loading}>
               <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
               刷新
+            </Button>
+            <Button variant="outline" onClick={() => setBulkOpen(true)}>
+              <Upload className="h-4 w-4" />
+              批量导入
             </Button>
             <Button onClick={() => setAddOpen(true)}>
               <Plus className="h-4 w-4" />
@@ -234,6 +275,49 @@ export default function ProxyPoolPage() {
             }}
             onCancel={() => setAddOpen(false)}
           />
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={bulkOpen} onOpenChange={setBulkOpen}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>批量导入代理</DialogTitle>
+            <DialogDescription>
+              每行一个代理，支持 host:port、host:port:username:password 或完整 URL。
+              重复项会自动跳过。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <Textarea
+              value={bulkText}
+              onChange={(event) => setBulkText(event.target.value)}
+              placeholder={'proxy.example:8000:username:password\nproxy2.example:8001'}
+              className="min-h-[240px] font-mono text-xs"
+              spellCheck={false}
+              disabled={bulkBusy}
+            />
+            <div className="flex items-center justify-between rounded-md border p-3">
+              <div>
+                <Label>导入后立即启用</Label>
+                <p className="text-[11px] text-muted-foreground">
+                  禁用状态下导入的代理不会用于账号连接。
+                </p>
+              </div>
+              <Switch
+                checked={bulkEnabled}
+                onCheckedChange={setBulkEnabled}
+                disabled={bulkBusy}
+              />
+            </div>
+            <div className="flex gap-2">
+              <Button onClick={() => void handleBulkImport()} disabled={bulkBusy || !bulkText.trim()}>
+                {bulkBusy ? '导入中…' : '开始导入'}
+              </Button>
+              <Button variant="outline" onClick={() => setBulkOpen(false)} disabled={bulkBusy}>
+                取消
+              </Button>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
 

@@ -42,7 +42,10 @@ export function ModelSelector({ value, onChange, labels }: Props) {
       <SelectContent>
         {models.map((m) => (
           <SelectItem key={m.id} value={m.id}>
-            {labels?.[m.id] ?? m.id}
+            {labels?.[m.id] ??
+              (m.display_name
+                ? `${m.display_name} · ${m.provider || m.owned_by || 'model'}`
+                : m.id)}
           </SelectItem>
         ))}
       </SelectContent>

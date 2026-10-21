@@ -376,6 +376,36 @@ class AccountPool:
         with self._lock:
             return next((a for a in self._accounts if a.id == account_id), None)
 
+    def keepalive_accounts(self) -> list[tuple[str, str]]:
+        """Return the stable account/provider pairs used by the scheduler."""
+        with self._lock:
+            return [(account.id, account.provider) for account in self._accounts]
+
+    def update_keepalive_credentials(
+        self,
+        account_id: str,
+        *,
+        cookies: str | None = None,
+        device_id: str | None = None,
+    ) -> Account:
+        """Persist session rotation without changing API scheduling state."""
+        with self._lock:
+            acct = next((a for a in self._accounts if a.id == account_id), None)
+            if acct is None:
+                raise KeyError("Account not found")
+            new_cookies = acct.cookies if cookies is None else cookies.strip()
+            new_device_id = (
+                acct.device_id if device_id is None else device_id.strip()
+            )
+            if new_cookies == acct.cookies and new_device_id == acct.device_id:
+                return acct
+            acct.cookies = new_cookies
+            acct.device_id = new_device_id
+            acct.updated_at = _now()
+            acct._adapter = None
+            self._save_persisted_accounts_locked()
+            return acct
+
     def find_by_token(
         self,
         token: str,
@@ -615,6 +645,13 @@ class AccountPool:
                 daemon=True,
             )
             t.start()
+
+    def mark_keepalive_invalid(self, acct: Account, error_msg: str = "") -> None:
+        """Disable an account without scheduling an upstream recovery probe."""
+        with self._lock:
+            acct.state = "error"
+            acct.error_count += 1
+            acct.last_error = error_msg
 
     def _background_recover(self, acct: Account) -> None:
         try:

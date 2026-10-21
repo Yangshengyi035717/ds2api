@@ -10,6 +10,7 @@ data/api_keys.sqlite3*
 data/runtime_config.json
 data/proxies.json
 data/admin_auth.json
+data/keepalive.sqlite3*
 keepalive/profile/
 keepalive/data/
 keepalive/_creds_probe.json

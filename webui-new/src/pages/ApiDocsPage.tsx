@@ -21,8 +21,9 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { get } from '@/lib/api'
-import type { RuntimeConfigResponse } from '@/lib/types'
+import type { ModelsResponse, RuntimeConfigResponse } from '@/lib/types'
 
 const ORIGIN = window.location.origin
 const API_BASE = `${ORIGIN}/v1`
@@ -178,12 +179,19 @@ function ErrorRow({
 
 export default function ApiDocsPage() {
   const [modelName, setModelName] = useState('deepseek-chat')
+  const [models, setModels] = useState<ModelsResponse['data']>([])
 
   useEffect(() => {
     let cancelled = false
-    get<RuntimeConfigResponse>('/admin/api/runtime-config')
-      .then((config) => {
-        if (!cancelled) setModelName(config.model_name)
+    Promise.all([
+      get<RuntimeConfigResponse>('/admin/api/runtime-config'),
+      get<ModelsResponse>('/v1/models'),
+    ])
+      .then(([config, modelList]) => {
+        if (cancelled) return
+        setModels(modelList.data)
+        const configured = modelList.data.find((model) => model.id === config.model_name)
+        setModelName(configured?.id ?? modelList.data[0]?.id ?? config.model_name)
       })
       .catch(() => {
         // Keep the documented default if runtime config cannot be loaded.
@@ -192,6 +200,10 @@ export default function ApiDocsPage() {
       cancelled = true
     }
   }, [])
+
+  const zaiModel = models.find((model) => model.provider === 'zai')?.id
+    ?? models.find((model) => model.id.startsWith('glm-'))?.id
+    ?? 'glm-5.3-flash'
 
   return (
     <div className="mx-auto max-w-[1180px] space-y-4 animate-fade-in">
@@ -239,12 +251,36 @@ export default function ApiDocsPage() {
                 <div className="rounded-md border p-3">
                   <div className="mb-1 flex items-center gap-1.5 text-xs font-medium">
                     <Sparkles className="h-3.5 w-3.5" />
-                    推荐模型名
+                    示例模型
                   </div>
-                  <code className="font-mono text-[11px] text-muted-foreground">
-                    {modelName}
-                  </code>
+                  <Select value={modelName} onValueChange={setModelName}>
+                    <SelectTrigger className="h-8">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(models.length > 0 ? models : [{ id: modelName }]).map((model) => (
+                        <SelectItem key={model.id} value={model.id}>
+                          {model.display_name
+                            ? `${model.display_name} · ${model.provider || 'model'}`
+                            : model.id}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                {models.map((model) => (
+                  <Badge
+                    key={model.id}
+                    variant={model.provider === 'zai' ? 'outline' : 'secondary'}
+                    className="gap-1"
+                  >
+                    {model.id}
+                    <span className="opacity-60">{model.provider || model.owned_by}</span>
+                  </Badge>
+                ))}
               </div>
 
               <div className="flex items-start gap-2 rounded-md border border-primary/20 bg-primary/5 p-3 text-xs leading-relaxed text-muted-foreground">
@@ -258,11 +294,12 @@ export default function ApiDocsPage() {
           </Card>
 
           <Tabs defaultValue="quick">
-            <TabsList className="grid h-auto w-full grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
+            <TabsList className="grid h-auto w-full grid-cols-2 sm:grid-cols-3 lg:grid-cols-7">
               <TabsTrigger value="quick">快速开始</TabsTrigger>
               <TabsTrigger value="openai">OpenAI</TabsTrigger>
               <TabsTrigger value="responses">Responses</TabsTrigger>
               <TabsTrigger value="anthropic">Anthropic</TabsTrigger>
+              <TabsTrigger value="zai">z.ai</TabsTrigger>
               <TabsTrigger value="sub2api">Sub2API</TabsTrigger>
               <TabsTrigger value="errors">错误与限制</TabsTrigger>
             </TabsList>
@@ -354,7 +391,7 @@ export default function ApiDocsPage() {
                 <CardHeader>
                   <CardTitle className="text-base">OpenAI Responses</CardTitle>
                   <CardDescription>
-                    兼容 Codex / Responses API；内部转换为现有 Chat Completions 内核和 DeepSeek 会话链。
+                    兼容 Codex / Responses API；内部转换为 Chat Completions 内核，并按模型路由到 DeepSeek 或 z.ai。
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3">
@@ -403,6 +440,38 @@ export default function ApiDocsPage() {
                 <CardContent className="space-y-3">
                   <CodeBlock code={anthropicPython(modelName)} title="Python" language="python" />
                   <CodeBlock code={anthropicCurl(modelName)} title="curl" language="bash" />
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="zai" className="space-y-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">z.ai / GLM-5.3 Flash</CardTitle>
+                  <CardDescription>
+                    z.ai 与 DeepSeek 共用 OpenAI / Responses / Anthropic 接口，
+                    通过请求中的 model 字段自动选择 z.ai 账号池。
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <MethodPath method="POST" path="/v1/chat/completions" />
+                  <CodeBlock
+                    code={openAiRequest(zaiModel)}
+                    title="OpenAI Chat Completions"
+                    language="json"
+                  />
+                  <CodeBlock
+                    code={openAiStream(zaiModel)}
+                    title="流式 cURL"
+                    language="bash"
+                  />
+                  <div>
+                    <FieldRow name="公开模型名" description={`${zaiModel}；请求会自动路由到 provider=zai 账号。`} />
+                    <FieldRow name="内部模型映射" description="默认 glm-5.3-flash → x-preview-l；由 ZAI_UPSTREAM_MODEL 控制。" />
+                    <FieldRow name="账号要求" description="z.ai 账号必须包含有效 token、user_id 和稳定 device_id。" />
+                    <FieldRow name="thinking_mode" description="映射 z.ai enable_thinking / reasoning_effort。" />
+                    <FieldRow name="search_enabled" description="映射 z.ai web search 能力。" />
+                  </div>
                 </CardContent>
               </Card>
             </TabsContent>

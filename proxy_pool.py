@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from dotenv import load_dotenv
 from curl_cffi import requests as cffi_requests
@@ -33,6 +33,7 @@ log = get_logger("proxy_pool")
 DEFAULT_STORE_PATH = Path(__file__).resolve().parent / "data" / "proxies.json"
 SUPPORTED_SCHEMES = {"http", "https", "socks4", "socks5", "socks5h"}
 PROXY_CHECK_URL = os.environ.get("PROXY_CHECK_URL", "https://chat.deepseek.com/")
+DEFAULT_PROXY_SCHEME = os.environ.get("PROXY_DEFAULT_SCHEME", "http").strip().lower() or "http"
 
 
 def _now() -> int:
@@ -47,6 +48,37 @@ def normalize_proxy_url(url: str) -> str:
     value = str(url or "").strip()
     if not value:
         raise ValueError("代理地址不能为空")
+    if DEFAULT_PROXY_SCHEME not in SUPPORTED_SCHEMES:
+        raise ValueError("PROXY_DEFAULT_SCHEME 不是受支持的代理协议")
+
+    # Common provider exports use:
+    #   host:port
+    #   host:port:username:password
+    # and omit the URL scheme. Split with maxsplit=3 so a password may contain
+    # additional ':' characters.
+    if "://" not in value:
+        parts = value.split(":", 3)
+        if len(parts) == 4:
+            host, port, username, password = parts
+            if not host or not port or not username:
+                raise ValueError(
+                    "裸代理格式应为 host:port:username:password"
+                )
+            value = (
+                f"{DEFAULT_PROXY_SCHEME}://{quote(username, safe='')}:"
+                f"{quote(password, safe='')}@{host}:{port}"
+            )
+        elif len(parts) == 2:
+            host, port = parts
+            if not host or not port:
+                raise ValueError("裸代理格式应为 host:port")
+            value = f"{DEFAULT_PROXY_SCHEME}://{host}:{port}"
+        elif "@" in value:
+            value = f"{DEFAULT_PROXY_SCHEME}://{value}"
+        else:
+            raise ValueError(
+                "裸代理格式应为 host:port 或 host:port:username:password"
+            )
     try:
         parsed = urlsplit(value)
         port = parsed.port
@@ -224,6 +256,52 @@ class ProxyPool:
             self._entries.append(entry)
             self._save_locked()
             return entry
+
+    def add_many(self, payload: str, enabled: bool = True) -> dict[str, Any]:
+        """Import newline-separated bare or URL-form proxy entries."""
+        lines = str(payload or "").splitlines()
+        added: list[ProxyEntry] = []
+        skipped = 0
+        errors: list[dict[str, Any]] = []
+        with self._lock:
+            known = {entry.url for entry in self._entries}
+            for line_number, raw in enumerate(lines, start=1):
+                value = raw.strip().lstrip("\ufeff")
+                if not value or value.startswith("#"):
+                    continue
+                try:
+                    normalized = normalize_proxy_url(value)
+                    if normalized in known:
+                        skipped += 1
+                        continue
+                    now = _now()
+                    entry = ProxyEntry(
+                        id=_proxy_id(),
+                        label=proxy_preview(normalized),
+                        url=normalized,
+                        enabled=enabled,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    self._entries.append(entry)
+                    known.add(normalized)
+                    added.append(entry)
+                except ValueError as exc:
+                    errors.append(
+                        {
+                            "line": line_number,
+                            "error": str(exc),
+                        }
+                    )
+            if added:
+                self._save_locked()
+        return {
+            "added": added,
+            "added_count": len(added),
+            "skipped_count": skipped,
+            "errors": errors[:50],
+            "error_count": len(errors),
+        }
 
     def update(
         self,

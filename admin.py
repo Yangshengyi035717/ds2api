@@ -32,6 +32,7 @@ from provider_registry import (
     normalize_provider,
     zai_upstream_model_name,
 )
+from keepalive_scheduler import get_scheduler_or_store, notify_account_changed
 
 log = get_logger("admin")
 
@@ -233,6 +234,18 @@ class KeepaliveAccountUpdateRequest(BaseModel):
     device_id: str | None = None
 
 
+class KeepaliveJobUpdateRequest(BaseModel):
+    enabled: bool | None = None
+    interval_secs: int | None = None
+
+
+class KeepaliveBulkRequest(BaseModel):
+    action: str
+    account_ids: list[str] | None = None
+    provider: str | None = None
+    interval_secs: int | None = None
+
+
 class CredentialImportRequest(BaseModel):
     payload: str | dict | list
     provider: str | None = None
@@ -267,6 +280,11 @@ class RuntimeConfigUpdateRequest(BaseModel):
 class ProxyAddRequest(BaseModel):
     label: str | None = ""
     url: str
+    enabled: bool = True
+
+
+class ProxyBulkImportRequest(BaseModel):
+    payload: str
     enabled: bool = True
 
 
@@ -506,6 +524,23 @@ async def add_proxy(req: ProxyAddRequest, request: Request):
     return {"ok": True, "proxy": entry.public_dict()}
 
 
+@router.post("/proxies/import")
+async def import_proxies(req: ProxyBulkImportRequest, request: Request):
+    _check_auth(request)
+    try:
+        result = get_proxy_pool().add_many(req.payload, enabled=req.enabled)
+    except Exception as e:
+        _proxy_error(e)
+    return {
+        "ok": True,
+        "added_count": result["added_count"],
+        "skipped_count": result["skipped_count"],
+        "error_count": result["error_count"],
+        "errors": result["errors"],
+        "proxies": [entry.public_dict() for entry in result["added"]],
+    }
+
+
 @router.put("/proxies/{proxy_id}")
 async def update_proxy(proxy_id: str, req: ProxyUpdateRequest, request: Request):
     _check_auth(request)
@@ -724,6 +759,70 @@ def _credential_payload(acct) -> dict:
     }
 
 
+def _keepalive_resources():
+    scheduler, store = get_scheduler_or_store()
+    store.sync_accounts(get_pool().keepalive_accounts())
+    return scheduler, store
+
+
+@router.get("/keepalive/jobs")
+async def list_keepalive_jobs(request: Request):
+    _check_auth(request)
+    scheduler, store = _keepalive_resources()
+    status = scheduler.status() if scheduler else {
+        "enabled": False,
+        "running": False,
+        "worker_id": "",
+        "tick_secs": 0,
+        "global_concurrency": 0,
+        **store.stats(),
+    }
+    return {"status": status, "jobs": store.list_jobs()}
+
+
+@router.put("/keepalive/jobs/{account_id}")
+async def update_keepalive_job(
+    account_id: str,
+    req: KeepaliveJobUpdateRequest,
+    request: Request,
+):
+    _check_auth(request)
+    _, store = _keepalive_resources()
+    job = store.update_job(
+        account_id,
+        enabled=req.enabled,
+        interval_secs=req.interval_secs,
+    )
+    if job is None:
+        raise HTTPException(status_code=404, detail="Keepalive job not found")
+    return {"ok": True, "job": job}
+
+
+@router.post("/keepalive/jobs/{account_id}/probe")
+async def probe_keepalive_job(account_id: str, request: Request):
+    _check_auth(request)
+    _, store = _keepalive_resources()
+    job = store.update_job(account_id, force=True)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Keepalive job not found")
+    return {"ok": True, "job": job}
+
+
+@router.post("/keepalive/actions/bulk")
+async def bulk_keepalive_action(req: KeepaliveBulkRequest, request: Request):
+    _check_auth(request)
+    if req.action not in {"enable", "disable", "probe", "clear"}:
+        raise HTTPException(status_code=400, detail="Unsupported keepalive action")
+    _, store = _keepalive_resources()
+    updated = store.bulk_update(
+        action=req.action,
+        account_ids=req.account_ids,
+        provider=req.provider,
+        interval_secs=req.interval_secs,
+    )
+    return {"ok": True, "updated": updated}
+
+
 @router.get("/keepalive/accounts/{account_id}")
 async def get_keepalive_account(
     account_id: str,
@@ -791,6 +890,7 @@ async def add_account(req: AccountAddRequest, request: Request):
         )
     except Exception as e:
         _pool_error(e)
+    notify_account_changed(acct.id)
     return {"ok": True, "account": acct.to_dict()}
 
 
@@ -837,6 +937,7 @@ async def import_account(req: CredentialImportRequest, request: Request, respons
             action = "created"
     except Exception as e:
         _pool_error(e)
+    notify_account_changed(acct.id)
 
     log.info(
         "account_credentials_imported",
@@ -941,6 +1042,7 @@ async def browser_login_ingest(
             action = "created"
     except Exception as e:
         _pool_error(e)
+    notify_account_changed(acct.id)
 
     log.info(
         "browser_login_credentials_ingested",
@@ -970,6 +1072,7 @@ async def update_account(account_id: str, req: AccountUpdateRequest, request: Re
         )
     except Exception as e:
         _pool_error(e)
+    notify_account_changed(acct.id)
     return {"ok": True, "account": acct.to_dict()}
 
 
@@ -983,6 +1086,7 @@ async def remove_account(account_id: str, request: Request):
         _pool_error(e)
     if not ok:
         raise HTTPException(status_code=404, detail="Account not found")
+    notify_account_changed()
     return {"ok": True}
 
 

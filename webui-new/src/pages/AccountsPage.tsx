@@ -22,17 +22,28 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { useApi } from '@/hooks/useApi'
-import { del, ApiCallError } from '@/lib/api'
+import { del, post, put, ApiCallError } from '@/lib/api'
 import { toast } from '@/hooks/use-toast'
 import { AccountForm } from '@/components/accounts/AccountForm'
 import { CredentialImportPanel } from '@/components/accounts/CredentialImportPanel'
 import { AccountTable } from '@/components/accounts/AccountTable'
 import { AccountDetailDrawer } from '@/components/accounts/AccountDetailDrawer'
+import { KeepalivePanel } from '@/components/accounts/KeepalivePanel'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import type { Account, AccountsResponse } from '@/lib/types'
+import type {
+  Account,
+  AccountsResponse,
+  KeepaliveJobsResponse,
+} from '@/lib/types'
 
 export default function AccountsPage() {
   const { data, error, loading, refresh } = useApi<AccountsResponse>('/admin/api/accounts', {
+    pollMs: 10000,
+  })
+  const {
+    data: keepaliveData,
+    refresh: refreshKeepalive,
+  } = useApi<KeepaliveJobsResponse>('/admin/api/keepalive/jobs', {
     pollMs: 10000,
   })
   const [addOpen, setAddOpen] = useState(false)
@@ -40,6 +51,7 @@ export default function AccountsPage() {
   const [viewing, setViewing] = useState<Account | null>(null)
   const [deleting, setDeleting] = useState<Account | null>(null)
   const [providerFilter, setProviderFilter] = useState<'all' | 'deepseek' | 'zai'>('all')
+  const [keepaliveBusy, setKeepaliveBusy] = useState(false)
 
   const allAccounts = data?.accounts ?? []
   const accounts = providerFilter === 'all'
@@ -50,6 +62,60 @@ export default function AccountsPage() {
     deepseek: allAccounts.filter((account) => account.provider === 'deepseek').length,
     zai: allAccounts.filter((account) => account.provider === 'zai').length,
   }
+  const keepaliveJobs = Object.fromEntries(
+    (keepaliveData?.jobs ?? []).map((job) => [job.account_id, job]),
+  )
+
+  const refreshAll = () => {
+    refresh()
+    refreshKeepalive()
+  }
+
+  const handleKeepaliveBulk = async (action: 'enable' | 'disable' | 'probe') => {
+    setKeepaliveBusy(true)
+    try {
+      await post('/admin/api/keepalive/actions/bulk', {
+        action,
+        provider: providerFilter === 'all' ? undefined : providerFilter,
+      })
+      toast({ title: '保活操作已提交', variant: 'success' })
+      refreshKeepalive()
+    } catch (e) {
+      const msg = e instanceof ApiCallError ? e.message : String(e)
+      toast({ title: '保活操作失败', description: msg, variant: 'destructive' })
+    } finally {
+      setKeepaliveBusy(false)
+    }
+  }
+
+  const handleKeepaliveToggle = async (account: Account, enabled: boolean) => {
+    setKeepaliveBusy(true)
+    try {
+      await put(`/admin/api/keepalive/jobs/${encodeURIComponent(account.id)}`, {
+        enabled,
+      })
+      refreshKeepalive()
+    } catch (e) {
+      const msg = e instanceof ApiCallError ? e.message : String(e)
+      toast({ title: '保活状态修改失败', description: msg, variant: 'destructive' })
+    } finally {
+      setKeepaliveBusy(false)
+    }
+  }
+
+  const handleKeepaliveProbe = async (account: Account) => {
+    setKeepaliveBusy(true)
+    try {
+      await post(`/admin/api/keepalive/jobs/${encodeURIComponent(account.id)}/probe`, {})
+      toast({ title: '已加入立即检测队列', variant: 'success' })
+      refreshKeepalive()
+    } catch (e) {
+      const msg = e instanceof ApiCallError ? e.message : String(e)
+      toast({ title: '立即检测失败', description: msg, variant: 'destructive' })
+    } finally {
+      setKeepaliveBusy(false)
+    }
+  }
 
   const handleDelete = async () => {
     if (!deleting) return
@@ -57,7 +123,7 @@ export default function AccountsPage() {
       await del(`/admin/api/accounts/${encodeURIComponent(deleting.id)}`)
       toast({ title: '账号已删除', variant: 'success' })
       setDeleting(null)
-      refresh()
+      refreshAll()
     } catch (e) {
       const msg = e instanceof ApiCallError ? e.message : String(e)
       toast({ title: '删除失败', description: msg, variant: 'destructive' })
@@ -94,6 +160,13 @@ export default function AccountsPage() {
         </TabsList>
       </Tabs>
 
+      <KeepalivePanel
+        status={keepaliveData?.status}
+        providerFilter={providerFilter}
+        busy={keepaliveBusy}
+        onBulk={handleKeepaliveBulk}
+      />
+
       <Card>
         <CardContent className="p-0">
           {loading && !data ? (
@@ -120,6 +193,9 @@ export default function AccountsPage() {
               onEdit={(a) => setEditing(a)}
               onDelete={(a) => setDeleting(a)}
               onSelect={(a) => setViewing(a)}
+              keepaliveJobs={keepaliveJobs}
+              onKeepaliveToggle={handleKeepaliveToggle}
+              onKeepaliveProbe={handleKeepaliveProbe}
             />
           )}
         </CardContent>
@@ -144,7 +220,7 @@ export default function AccountsPage() {
               <CredentialImportPanel
                 onImported={() => {
                   setAddOpen(false)
-                  refresh()
+                  refreshAll()
                 }}
               />
             </TabsContent>
@@ -153,7 +229,7 @@ export default function AccountsPage() {
                 provider="zai"
                 onImported={() => {
                   setAddOpen(false)
-                  refresh()
+                  refreshAll()
                 }}
               />
             </TabsContent>
@@ -161,7 +237,7 @@ export default function AccountsPage() {
               <AccountForm
                 onSaved={() => {
                   setAddOpen(false)
-                  refresh()
+                  refreshAll()
                 }}
                 onCancel={() => setAddOpen(false)}
               />
@@ -184,7 +260,7 @@ export default function AccountsPage() {
               account={editing}
               onSaved={() => {
                 setEditing(null)
-                refresh()
+                refreshAll()
               }}
               onCancel={() => setEditing(null)}
             />
@@ -215,7 +291,7 @@ export default function AccountsPage() {
       <AccountDetailDrawer
         account={viewing}
         onClose={() => setViewing(null)}
-        onRelogin={refresh}
+        onRelogin={refreshAll}
       />
     </div>
   )

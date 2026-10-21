@@ -60,6 +60,42 @@ export interface AccountsResponse {
   error: number
 }
 
+export interface KeepaliveJob {
+  account_id: string
+  provider: string
+  enabled: boolean
+  interval_secs: number
+  next_run_at: number
+  lease_owner: string | null
+  lease_until: number | null
+  state: 'active' | 'cooldown' | 'relogin_required' | 'disabled' | 'running' | string
+  consecutive_failures: number
+  last_run_at: number | null
+  last_success_at: number | null
+  last_status: number | null
+  last_error: string
+  updated_at: number
+}
+
+export interface KeepaliveStatus {
+  enabled: boolean
+  running: boolean
+  worker_id: string
+  tick_secs: number
+  global_concurrency: number
+  total: number
+  enabled_count: number
+  active: number
+  cooldown: number
+  relogin_required: number
+  running_count: number
+}
+
+export interface KeepaliveJobsResponse {
+  status: KeepaliveStatus
+  jobs: KeepaliveJob[]
+}
+
 export interface HistoryPoint {
   /** Unix timestamp (seconds) of the snapshot. */
   t: number
@@ -122,6 +158,9 @@ export interface ModelInfo {
   object?: string
   created?: number
   owned_by?: string
+  provider?: string
+  display_name?: string
+  reasoning?: boolean
 }
 
 export interface ModelsResponse {

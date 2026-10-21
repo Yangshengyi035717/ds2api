@@ -42,6 +42,7 @@
 - `server.py`：`/v1/models` 同时列出 DeepSeek 与 z.ai；OpenAI Chat、Responses、Anthropic Messages 共用现有格式层，但按 model 选择 provider。z.ai 每轮使用新 chat UUID 并重发完整 prompt，不套用 DeepSeek 的 delta/parent 链。
 - WebUI：账号池提供全部 / DeepSeek / z.ai 分类；新增 z.ai 导入脚本与手动 User ID 输入。
 - `keepalive/`：同一 worker 按账号 `provider` 分流；z.ai 周期探测已验证的 chat-list 只读接口并回写轮换 Cookie，支持账号代理。生产使用 `KEEPALIVE_SHARED_SECRET` 调用最小权限接口，避免 admin 会话在 DS2API 重启后失效。
+- 多账号：`keepalive_store.py` 使用 SQLite 保存 Job/租约/退避，`keepalive_scheduler.py` 在 DS2API 进程内按 provider 并发探活；WebUI 账号池提供逐账号与批量操作。启用后不要再运行旧的单账号 keepalive 容器。
 - 测试：`tests/test_zai_provider.py` 覆盖签名向量、v2 路径、SSE thinking/answer、账号隔离与去重。
 
 **边界**
@@ -253,6 +254,8 @@ D:\the llaa\DS反代 --pre\
 ├── adapter.py             # DeepSeek API 适配器（PoW、会话、SSE 解析）
 ├── zai_adapter.py         # z.ai v2 适配器（签名、浏览器指纹、SSE）
 ├── provider_registry.py   # Provider / 模型路由
+├── keepalive_store.py     # 多账号保活 Job / 租约 / 退避 SQLite
+├── keepalive_scheduler.py # 进程内多账号保活调度器
 ├── anthropic_format.py    # Anthropic /v1/messages 格式转换层
 ├── responses_format.py    # OpenAI Responses 与 Chat Completions 转换层
 ├── account_pool.py        # 多账号池管理（CRUD、状态追踪、轮询分配、健康检查）
@@ -285,10 +288,12 @@ D:\the llaa\DS反代 --pre\
 | `adapter.py` | 与 DeepSeek API 通信、PoW 求解、SSE 流解析、会话创建 | HTTP 路由、OpenAI/Anthropic 格式 |
 | `zai_adapter.py` | 与 z.ai v2 completion 通信、HMAC 签名、fingerprint query、SSE thinking/answer 分流 | HTTP 路由、OpenAI/Anthropic 格式 |
 | `provider_registry.py` | `deepseek` / `zai` 常量、模型到 Provider 的归一化、z.ai 模型名解析 | 账号选择、HTTP 路由 |
+| `keepalive_store.py` | keepalive Job 表、原子领取、租约、退避和启停状态 | Provider 探活、HTTP 路由 |
+| `keepalive_scheduler.py` | 按到期 Job 并发执行各 provider 探活，回写 Cookie 并隔离失败账号 | HTTP 路由、WebUI 渲染 |
 | `anthropic_format.py` | Anthropic `/v1/messages` 请求解析、响应组装、SSE 生成 | DeepSeek 协议、HTTP 路由 |
 | `responses_format.py` | OpenAI Responses 输入映射、非流式对象和 SSE 事件转换 | DeepSeek 协议、HTTP 路由 |
 | `account_pool.py` | 多 provider 账号 CRUD、状态追踪（idle/busy/error）、按 provider 轮询、健康检查/重登录 | HTTP 路由、上游协议 |
-| `proxy_pool.py` | 代理池 CRUD、HTTP/SOCKS 代理校验、连通性检测、Fernet 加密持久化 | 账号选择、HTTP 路由 |
+| `proxy_pool.py` | 代理池 CRUD、标准 URL / `host:port` / `host:port:user:pass` 裸格式、批量导入、HTTP/SOCKS 校验与 Fernet 加密持久化 | 账号选择、HTTP 路由 |
 | `runtime_config.py` | 模型名称、显示名称、价格和倍率的线程安全持久化 | HTTP 路由、上游协议 |
 | `admin.py` | 管理后台 API 端点（密码认证、统计查询、账号池 CRUD、重登录触发） | 前端渲染、DeepSeek 协议 |
 | `tool_dsml.py` | DSML XML 解析与生成、工具提示词构建 | 流式检测、HTTP |

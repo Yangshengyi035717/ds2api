@@ -1,4 +1,4 @@
-import { Pencil, Trash2 } from 'lucide-react'
+import { Pencil, RefreshCw, Trash2 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -13,16 +13,28 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { StateBadge } from './StateBadge'
 import { ReloginButton } from './ReloginButton'
 import { truncateMiddle } from '@/lib/utils'
-import type { Account } from '@/lib/types'
+import type { Account, KeepaliveJob } from '@/lib/types'
+import { Switch } from '@/components/ui/switch'
 
 interface Props {
   accounts: Account[]
   onEdit: (a: Account) => void
   onDelete: (a: Account) => void
   onSelect: (a: Account) => void
+  keepaliveJobs: Record<string, KeepaliveJob>
+  onKeepaliveToggle: (a: Account, enabled: boolean) => void
+  onKeepaliveProbe: (a: Account) => void
 }
 
-export function AccountTable({ accounts, onEdit, onDelete, onSelect }: Props) {
+export function AccountTable({
+  accounts,
+  onEdit,
+  onDelete,
+  onSelect,
+  keepaliveJobs,
+  onKeepaliveToggle,
+  onKeepaliveProbe,
+}: Props) {
   return (
     <Table>
       <TableHeader>
@@ -31,6 +43,7 @@ export function AccountTable({ accounts, onEdit, onDelete, onSelect }: Props) {
           <TableHead className="hidden lg:table-cell">来源</TableHead>
           <TableHead>出口代理</TableHead>
           <TableHead>状态</TableHead>
+          <TableHead>保活</TableHead>
           <TableHead className="hidden 2xl:table-cell">Token</TableHead>
           <TableHead className="hidden 2xl:table-cell">Cookies</TableHead>
           <TableHead className="text-right">错误</TableHead>
@@ -93,6 +106,57 @@ export function AccountTable({ accounts, onEdit, onDelete, onSelect }: Props) {
               </TableCell>
               <TableCell>
                 <StateBadge state={a.state} />
+              </TableCell>
+              <TableCell onClick={(e) => e.stopPropagation()}>
+                {(() => {
+                  const job = keepaliveJobs[a.id]
+                  const state = job?.state ?? 'disabled'
+                  const label =
+                    state === 'relogin_required'
+                      ? '待重登'
+                      : state === 'cooldown'
+                        ? '冷却'
+                        : state === 'running'
+                          ? '执行中'
+                          : state === 'active'
+                            ? '正常'
+                            : '停用'
+                  return (
+                    <div className="flex items-center gap-2">
+                      <Switch
+                        checked={job?.enabled ?? false}
+                        onCheckedChange={(checked) => onKeepaliveToggle(a, checked)}
+                        aria-label={`切换 ${a.email || a.id} 保活`}
+                      />
+                      <Badge
+                        variant={
+                          state === 'active'
+                            ? 'success'
+                            : state === 'relogin_required'
+                              ? 'destructive'
+                              : 'secondary'
+                        }
+                        className="whitespace-nowrap text-[10px]"
+                      >
+                        {label}
+                      </Badge>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7"
+                            onClick={() => onKeepaliveProbe(a)}
+                            aria-label="立即检测保活"
+                          >
+                            <RefreshCw className="h-3.5 w-3.5" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>立即检测</TooltipContent>
+                      </Tooltip>
+                    </div>
+                  )
+                })()}
               </TableCell>
               <TableCell className="hidden 2xl:table-cell">
                 <span className="font-mono text-xs text-muted-foreground">
