@@ -317,13 +317,24 @@ def push_cookies(
     admin_token: str,
     account_id: str,
     cookies: str,
+    keepalive_secret: str = "",
 ) -> None:
     push_account_updates(
         dsapi_url,
         admin_token,
         account_id,
         cookies=cookies,
+        keepalive_secret=keepalive_secret,
     )
+
+
+def _keepalive_headers(
+    admin_token: str = "",
+    keepalive_secret: str = "",
+) -> dict[str, str]:
+    if keepalive_secret:
+        return {"X-Keepalive-Secret": keepalive_secret}
+    return {"Authorization": f"Bearer {admin_token}"}
 
 
 def push_account_updates(
@@ -333,6 +344,7 @@ def push_account_updates(
     *,
     cookies: str | None = None,
     device_id: str | None = None,
+    keepalive_secret: str = "",
 ) -> None:
     payload: dict[str, str] = {}
     if cookies is not None:
@@ -342,8 +354,8 @@ def push_account_updates(
     if not payload:
         return
     response = cffi_requests.put(
-        f"{dsapi_url.rstrip('/')}/admin/api/accounts/{account_id}",
-        headers={"Authorization": f"Bearer {admin_token}"},
+        f"{dsapi_url.rstrip('/')}/admin/api/keepalive/accounts/{account_id}",
+        headers=_keepalive_headers(admin_token, keepalive_secret),
         json=payload,
         timeout=30,
     )
@@ -364,6 +376,7 @@ def _refresh_zai(
     creds: dict[str, str],
     impersonate: str,
     device_id: str | None,
+    keepalive_secret: str,
 ) -> int:
     token = _normalize_token(creds["token"])
     original_cookies = creds["cookies"]
@@ -404,6 +417,7 @@ def _refresh_zai(
                 admin_token,
                 account_id,
                 **updates,
+                keepalive_secret=keepalive_secret,
             )
             print(
                 f"REFRESHED account={account_id} provider=zai "
@@ -436,9 +450,15 @@ def refresh_once(
     account_id: str,
     impersonate: str,
     device_id: str | None = None,
+    keepalive_secret: str = "",
 ) -> int:
     """One keepalive cycle. Returns a process exit code."""
-    creds = _read_full_credentials(dsapi_url, admin_token, account_id)
+    creds = _read_full_credentials(
+        dsapi_url,
+        admin_token,
+        account_id,
+        keepalive_secret=keepalive_secret,
+    )
     if _provider(creds.get("provider")) == "zai":
         return _refresh_zai(
             dsapi_url,
@@ -447,6 +467,7 @@ def refresh_once(
             creds,
             impersonate,
             device_id,
+            keepalive_secret,
         )
     token = _normalize_token(creds["token"])
     original_cookies = creds["cookies"]
@@ -496,11 +517,12 @@ def _read_full_credentials(
     dsapi_url: str,
     admin_token: str,
     account_id: str,
+    keepalive_secret: str = "",
 ) -> dict[str, str]:
     """Read the stored token/cookies via the account-detail endpoint."""
     response = cffi_requests.get(
-        f"{dsapi_url.rstrip('/')}/admin/api/accounts/{account_id}",
-        headers={"Authorization": f"Bearer {admin_token}"},
+        f"{dsapi_url.rstrip('/')}/admin/api/keepalive/accounts/{account_id}",
+        headers=_keepalive_headers(admin_token, keepalive_secret),
         timeout=30,
     )
     if response.status_code == 404:
@@ -522,6 +544,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dsapi-url", default=os.environ.get("DS2API_URL", "http://127.0.0.1:3011"))
     parser.add_argument("--admin-token", default=os.environ.get("DS2API_ADMIN_TOKEN", ""))
+    parser.add_argument(
+        "--keepalive-secret",
+        default=os.environ.get("KEEPALIVE_SHARED_SECRET", ""),
+    )
     parser.add_argument("--account-id", default=os.environ.get("DS2API_ACCOUNT_ID", ""))
     parser.add_argument("--interval", type=int, default=int(os.environ.get("KEEPALIVE_INTERVAL", "900")))
     parser.add_argument("--impersonate", default=DEFAULT_IMPERSONATE)
@@ -531,8 +557,12 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    if not args.admin_token or not args.account_id:
-        print("DS2API_ADMIN_TOKEN and DS2API_ACCOUNT_ID are required", file=sys.stderr)
+    if not args.account_id or not (args.admin_token or args.keepalive_secret):
+        print(
+            "DS2API_ACCOUNT_ID and either KEEPALIVE_SHARED_SECRET "
+            "or DS2API_ADMIN_TOKEN are required",
+            file=sys.stderr,
+        )
         return 1
 
     while True:
@@ -542,6 +572,7 @@ def main() -> int:
                 args.admin_token,
                 args.account_id,
                 args.impersonate,
+                keepalive_secret=args.keepalive_secret,
             )
         except Exception as exc:  # noqa: BLE001 - keep the worker alive
             print(f"ERROR {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)

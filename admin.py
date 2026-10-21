@@ -2,6 +2,7 @@
 Admin API — authentication, statistics tracking, account pool management.
 """
 import asyncio
+import hmac
 import os
 import secrets
 import threading
@@ -227,6 +228,11 @@ class AccountUpdateRequest(BaseModel):
     user_id: str | None = None
 
 
+class KeepaliveAccountUpdateRequest(BaseModel):
+    cookies: str | None = None
+    device_id: str | None = None
+
+
 class CredentialImportRequest(BaseModel):
     payload: str | dict | list
     provider: str | None = None
@@ -273,6 +279,15 @@ class ProxyUpdateRequest(BaseModel):
 # ── Router ────────────────────────────────────────────────────
 
 router = APIRouter(prefix="/admin/api")
+
+
+def _check_keepalive_auth(request: Request) -> None:
+    """Accept the narrow keepalive secret, or a normal admin session."""
+    configured = os.environ.get("KEEPALIVE_SHARED_SECRET", "").strip()
+    supplied = request.headers.get("X-Keepalive-Secret", "").strip()
+    if configured and supplied and hmac.compare_digest(configured, supplied):
+        return
+    _check_auth(request)
 
 
 def _check_auth(request: Request):
@@ -695,6 +710,54 @@ async def list_accounts(request: Request, provider: str | None = None):
     }
 
 
+def _credential_payload(acct) -> dict:
+    proxy_url = acct.proxy.strip()
+    if not proxy_url and acct.proxy_id:
+        proxy_url = get_proxy_pool().resolve_url(acct.proxy_id) or ""
+    return {
+        **acct.to_dict(),
+        "token": acct.token,
+        "cookies": acct.cookies,
+        "device_id": acct.device_id,
+        "user_id": acct.user_id,
+        "proxy_url": proxy_url,
+    }
+
+
+@router.get("/keepalive/accounts/{account_id}")
+async def get_keepalive_account(
+    account_id: str,
+    request: Request,
+    response: Response,
+):
+    _check_keepalive_auth(request)
+    response.headers["Cache-Control"] = "no-store"
+    acct = get_pool().get_by_id(account_id)
+    if acct is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+    return {"account": _credential_payload(acct)}
+
+
+@router.put("/keepalive/accounts/{account_id}")
+async def update_keepalive_account(
+    account_id: str,
+    req: KeepaliveAccountUpdateRequest,
+    request: Request,
+    response: Response,
+):
+    _check_keepalive_auth(request)
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        acct = get_pool().update(
+            account_id,
+            cookies=req.cookies,
+            device_id=req.device_id,
+        )
+    except Exception as e:
+        _pool_error(e)
+    return {"ok": True, "account": _credential_payload(acct)}
+
+
 @router.get("/accounts/{account_id}")
 async def get_account_credentials(account_id: str, request: Request, response: Response):
     """Return one account including raw token/cookies.
@@ -709,19 +772,7 @@ async def get_account_credentials(account_id: str, request: Request, response: R
     acct = get_pool().get_by_id(account_id)
     if acct is None:
         raise HTTPException(status_code=404, detail="Account not found")
-    proxy_url = acct.proxy.strip()
-    if not proxy_url and acct.proxy_id:
-        proxy_url = get_proxy_pool().resolve_url(acct.proxy_id) or ""
-    return {
-        "account": {
-            **acct.to_dict(),
-            "token": acct.token,
-            "cookies": acct.cookies,
-            "device_id": acct.device_id,
-            "user_id": acct.user_id,
-            "proxy_url": proxy_url,
-        }
-    }
+    return {"account": _credential_payload(acct)}
 
 
 @router.post("/accounts")

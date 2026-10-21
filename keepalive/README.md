@@ -60,11 +60,16 @@ account's bound proxy when one is configured.
 
 ```bash
 cd /www/dk_project/dk_app/dsapi/keepalive
-export DS2API_ADMIN_TOKEN='<DS2API admin session token>'
+export KEEPALIVE_SHARED_SECRET='<same value as DS2API KEEPALIVE_SHARED_SECRET>'
 export DS2API_ACCOUNT_ID='<account id>'
 docker compose up -d --build
 docker compose logs -f
 ```
+
+`KEEPALIVE_SHARED_SECRET` is the preferred credential. It only authorizes
+credential reads and Cookie/Device-ID updates for the keepalive worker and
+survives DS2API restarts. `DS2API_ADMIN_TOKEN` remains supported as a fallback,
+but admin sessions are revoked whenever DS2API restarts.
 
 Single cycle (useful for debugging):
 

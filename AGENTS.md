@@ -41,7 +41,7 @@
 - `account_pool.py`：账号持久化 `provider` / `user_id`；池选择按 provider 隔离；z.ai 缺 `user_id` 拒绝新增/更新，旧数据标记 error。
 - `server.py`：`/v1/models` 同时列出 DeepSeek 与 z.ai；OpenAI Chat、Responses、Anthropic Messages 共用现有格式层，但按 model 选择 provider。z.ai 每轮使用新 chat UUID 并重发完整 prompt，不套用 DeepSeek 的 delta/parent 链。
 - WebUI：账号池提供全部 / DeepSeek / z.ai 分类；新增 z.ai 导入脚本与手动 User ID 输入。
-- `keepalive/`：同一 worker 按账号 `provider` 分流；z.ai 周期探测已验证的 chat-list 只读接口并回写轮换 Cookie，支持账号代理。
+- `keepalive/`：同一 worker 按账号 `provider` 分流；z.ai 周期探测已验证的 chat-list 只读接口并回写轮换 Cookie，支持账号代理。生产使用 `KEEPALIVE_SHARED_SECRET` 调用最小权限接口，避免 admin 会话在 DS2API 重启后失效。
 - 测试：`tests/test_zai_provider.py` 覆盖签名向量、v2 路径、SSE thinking/answer、账号隔离与去重。
 
 **边界**

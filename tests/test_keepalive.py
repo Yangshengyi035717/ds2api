@@ -217,7 +217,17 @@ def test_zai_cycle_pushes_rotated_cookies(monkeypatch):
     assert captured["proxies"] == {"all": "http://127.0.0.1:7890"}
     assert pushed == [{
         "cookies": "acw_tc=new; token=stale; cdn_sec_tc=waf",
+        "keepalive_secret": "",
     }]
+
+
+def test_keepalive_headers_prefer_shared_secret():
+    assert keepalive._keepalive_headers("admin", "shared") == {
+        "X-Keepalive-Secret": "shared"
+    }
+    assert keepalive._keepalive_headers("admin") == {
+        "Authorization": "Bearer admin"
+    }
 
 
 def test_zai_cycle_stops_on_unauthorized(monkeypatch):

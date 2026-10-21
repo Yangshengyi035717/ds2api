@@ -29,6 +29,7 @@ HOST=0.0.0.0
 PORT=8080
 DEEPSEEK_ADMIN_PASSWORD=<strong-random-password>
 ALLOW_INSECURE_PUBLIC_DEFAULTS=false
+KEEPALIVE_SHARED_SECRET=<random-shared-secret>
 ```
 
 The application refuses to start with a weak admin password on a public bind.

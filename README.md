@@ -114,6 +114,10 @@ docker compose up -d --build
 回写；z.ai 优先使用该账号绑定的代理出口。`401/403`（z.ai）或
 `40003`（DeepSeek）判定为登录失效，并停止等待人工重新导入。
 
+生产环境建议在 WebUI 的 `.env` 与 `keepalive/.env` 中配置相同的
+`KEEPALIVE_SHARED_SECRET`。该密钥只允许读取指定账号凭据和更新
+Cookie/Device ID，不会随 DS2API 重启失效；`DS2API_ADMIN_TOKEN` 仅作为兼容回退。
+
 如果服务器机房 IP 被上游 CDN 拦截（页面显示 `403 Request blocked`），
 在 `.env` 设置浏览器出口代理后重启 sidecar：
 
