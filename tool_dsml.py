@@ -287,5 +287,13 @@ RULES:
         fn = tool.get("function", {})
         name = fn.get("name") or tool.get("name", "")
         desc = (fn.get("description") or tool.get("description", "")).split("\n")[0].strip()
+        parameters = fn.get("parameters") or tool.get("parameters")
         prompt += f"  - {name}: {desc}\n" if desc and name else f"  - {name}\n"
+        if name and isinstance(parameters, dict):
+            schema = json.dumps(
+                parameters,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            prompt += f"    parameters: {schema}\n"
     return prompt.strip()

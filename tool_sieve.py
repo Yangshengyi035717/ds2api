@@ -28,6 +28,10 @@ def _env_int(name: str, default: int) -> int:
 MAX_CAPTURE_BUFFER = _env_int("DSML_MAX_BUFFER_BYTES", 1024 * 1024)  # 1 MiB
 
 
+class IncompleteToolCallError(RuntimeError):
+    """The model started a DSML tool call but the stream ended mid-call."""
+
+
 @dataclass
 class SieveEvent:
     type: str  # 'text' | 'tool_calls'
@@ -168,7 +172,7 @@ class StreamSieve:
                 break
         return events
 
-    def flush(self) -> list[SieveEvent]:
+    def flush(self, *, reject_incomplete_tool_call: bool = False) -> list[SieveEvent]:
         events: list[SieveEvent] = []
         if self._capturing:
             result = self._try_finish_capture()
@@ -181,7 +185,12 @@ class StreamSieve:
                 if suffix:
                     events.append(SieveEvent("text", suffix))
             else:
-                # 没闭合，当正文处理
+                if reject_incomplete_tool_call:
+                    raise IncompleteToolCallError(
+                        "model stream ended before the DSML tool call was closed"
+                    )
+                # Without an active tool schema this can be a legitimate
+                # example of DSML text, so preserve the old pass-through.
                 events.append(SieveEvent("text", self._capture_buf))
             self._capture_buf = ""
             self._capturing = False

@@ -54,7 +54,7 @@ from tool_dsml import (
     format_tool_calls_for_prompt,
     build_dsml_tool_prompt,
 )
-from tool_sieve import StreamSieve, SieveEvent
+from tool_sieve import IncompleteToolCallError, StreamSieve, SieveEvent
 from anthropic_format import (
     AnthropicRequest,
     build_anthropic_prompt,
@@ -2006,7 +2006,15 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
 
             # Flush sieve
             had_tool = False
-            for evt in sieve.flush():
+            try:
+                flushed_events = sieve.flush(
+                    reject_incomplete_tool_call=bool(tool_names)
+                )
+            except IncompleteToolCallError:
+                raise UpstreamTransientError(
+                    "模型返回了不完整的工具调用，请重试"
+                ) from None
+            for evt in flushed_events:
                 if evt.type == "text" and evt.data:
                     completion_parts.append(evt.data)
                     if not role_sent:

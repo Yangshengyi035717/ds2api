@@ -105,13 +105,17 @@ def test_build_dsml_tool_prompt_lists_tools():
         "function": {
             "name": "f",
             "description": "Does the thing",
-            "parameters": {"type": "object"},
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+            },
         },
     }]
     out = build_dsml_tool_prompt(tools, "auto")
     assert "f" in out
     assert "Does the thing" in out
     assert "tool_calls" in out  # format example mentions the tag
+    assert '"city":{"type":"string"}' in out
 
 
 def test_build_dsml_tool_prompt_required():

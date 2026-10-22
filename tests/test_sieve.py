@@ -4,7 +4,7 @@ Run with:  python -m pytest tests/test_sieve.py -v
 """
 import pytest
 
-from tool_sieve import StreamSieve, SieveEvent
+from tool_sieve import IncompleteToolCallError, StreamSieve, SieveEvent
 
 
 def _collect_text(sieve, chunks):
@@ -129,3 +129,24 @@ def test_tokenized_dsml_tool_call_leaks_no_text():
 def test_lone_lt_and_pipe_in_plain_text_pass_through():
     s = StreamSieve(parse_fn=_parse_fn_stub)
     assert _collect_text(s, ["a < b", " | c"]) == "a < b | c"
+
+
+def test_incomplete_tool_call_can_fail_closed_when_tools_are_active():
+    s = StreamSieve(parse_fn=lambda t: ([], t))
+    text, _ = _collect(s, [
+        "|DSML|tool_calls>\n",
+        '  <|DSML|invoke name="exec_command">',
+    ])
+    assert text == (
+        "|DSML|tool_calls>\n"
+        '  <|DSML|invoke name="exec_command">'
+    )
+
+    s = StreamSieve(parse_fn=lambda t: ([], t))
+    for chunk in (
+        "|DSML|tool_calls>\n",
+        '  <|DSML|invoke name="exec_command">',
+    ):
+        s.feed(chunk)
+    with pytest.raises(IncompleteToolCallError):
+        s.flush(reject_incomplete_tool_call=True)
