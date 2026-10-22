@@ -22,9 +22,11 @@ from keepalive_store import (
 )
 from logger import get_logger
 from provider_registry import (
+    PROVIDER_DEEPSEEK,
     PROVIDER_HUNYUAN,
     PROVIDER_DOUBAO,
     PROVIDER_KIMI,
+    PROVIDER_MIMO,
     PROVIDER_QWEN,
     PROVIDER_WENXIN,
     PROVIDER_ZAI,
@@ -96,6 +98,9 @@ class KeepaliveScheduler:
             ),
             PROVIDER_DOUBAO: threading.BoundedSemaphore(
                 max(1, _env_int("KEEPALIVE_DOUBAO_CONCURRENCY", 2))
+            ),
+            PROVIDER_MIMO: threading.BoundedSemaphore(
+                max(1, _env_int("KEEPALIVE_MIMO_CONCURRENCY", 2))
             ),
         }
 
@@ -288,7 +293,12 @@ class KeepaliveScheduler:
         provider: str,
     ) -> tuple[keepalive.ProbeResult, str, str, str, str]:
         token = keepalive._normalize_token(acct.token)
-        if not token and provider not in {PROVIDER_QWEN, PROVIDER_HUNYUAN}:
+        # Cookie-authenticated providers validate credentials in their adapters.
+        if not token and provider in {
+            PROVIDER_DEEPSEEK,
+            PROVIDER_ZAI,
+            PROVIDER_KIMI,
+        }:
             code = 401 if provider == PROVIDER_ZAI else 40003
             return (
                 keepalive.ProbeResult(0, False, code, "no token"),
@@ -312,6 +322,40 @@ class KeepaliveScheduler:
         if not proxy_url and acct.proxy_id:
             proxy_url = get_proxy_pool().resolve_url(acct.proxy_id) or ""
         proxies = {"all": proxy_url} if proxy_url else None
+        if provider == PROVIDER_MIMO:
+            from mimo_adapter import MimoAdapter, MimoAuthError
+
+            adapter = None
+            try:
+                adapter = MimoAdapter(
+                    token=acct.token,
+                    cookies=acct.cookies,
+                    device_id=acct.device_id,
+                    user_id=acct.user_id,
+                    session_id=acct.session_id,
+                    proxy=proxy_url or None,
+                )
+                adapter.check_health()
+                # The adapter synchronizes this header from its domain-scoped
+                # client Cookie jar after the read-only health request.
+                return (
+                    keepalive.ProbeResult(200, True, 0, ""),
+                    adapter.cookies,
+                    acct.device_id,
+                    acct.token,
+                    acct.refresh_token,
+                )
+            except MimoAuthError:
+                return (
+                    keepalive.ProbeResult(401, False, 401, "MiMo 登录 Cookie 已失效"),
+                    acct.cookies,
+                    acct.device_id,
+                    acct.token,
+                    acct.refresh_token,
+                )
+            finally:
+                if adapter is not None:
+                    adapter.close()
         if provider == PROVIDER_KIMI:
             from kimi_adapter import KimiAdapter, KimiAuthError
 

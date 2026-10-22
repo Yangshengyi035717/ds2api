@@ -3,16 +3,17 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import type { KeepaliveStatus } from '@/lib/types'
+import { getProviderLabel, type AccountProviderFilter } from '@/lib/providers'
 
 interface Props {
   status?: KeepaliveStatus
-  providerFilter: 'all' | 'deepseek' | 'zai' | 'kimi' | 'qianwen' | 'hunyuan' | 'wenxin' | 'doubao'
+  providerFilter: AccountProviderFilter
   busy: boolean
   onBulk: (action: 'enable' | 'disable' | 'probe') => void
 }
 
 export function KeepalivePanel({ status, providerFilter, busy, onBulk }: Props) {
-  const provider = providerFilter === 'all' ? undefined : providerFilter
+  const provider = providerFilter === 'all' ? undefined : getProviderLabel(providerFilter)
   return (
     <Card className="border-dashed">
       <CardContent className="flex flex-col gap-3 p-4 xl:flex-row xl:items-center xl:justify-between">
@@ -32,6 +33,11 @@ export function KeepalivePanel({ status, providerFilter, busy, onBulk }: Props) 
             <span className="text-xs text-warning">
               需设置 KEEPALIVE_ENABLED=true 后重启
             </span>
+          )}
+          {(providerFilter === 'all' || providerFilter === 'mimo') && (
+            <p className="w-full text-xs text-muted-foreground">
+              小米 MiMo 保活只验证登录态并回写轮换 Cookie；Cookie 过期后需重新登录并导入。
+            </p>
           )}
         </div>
         <div className="flex flex-wrap gap-2">

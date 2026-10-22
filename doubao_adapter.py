@@ -386,33 +386,36 @@ class DoubaoAdapter:
                         ready_out["session_id"] = ack.get("conversation_id")
                     continue
                 if event == "STREAM_MSG_NOTIFY":
-                    for block in ((data.get("content") or {}).get("content_block") or []):
-                        if block.get("block_type") == 10040:
-                            thinking_blocks.add(str(block.get("block_id") or ""))
-                    continue
-                if event == "CHUNK_DELTA":
+                    blocks = (data.get("content") or {}).get("content_block") or []
+                elif event == "CHUNK_DELTA":
                     text = data.get("text")
                     if isinstance(text, str) and text:
                         answer_seen = True
                         yield text
                     continue
-                if event != "STREAM_CHUNK":
+                elif event == "STREAM_CHUNK":
+                    blocks = [
+                        block
+                        for op in data.get("patch_op") or []
+                        if op.get("patch_object") == 1
+                        for block in (op.get("patch_value") or {}).get("content_block") or []
+                    ]
+                else:
                     continue
-                for op in data.get("patch_op") or []:
-                    if op.get("patch_object") != 1:
+                for block in blocks:
+                    block_type = block.get("block_type")
+                    if block_type == 10040 and block.get("block_id"):
+                        thinking_blocks.add(str(block["block_id"]))
+                    text_block = (block.get("content") or {}).get("text_block") or {}
+                    text = text_block.get("text")
+                    if not isinstance(text, str) or not text:
                         continue
-                    for block in (op.get("patch_value") or {}).get("content_block") or []:
-                        block_type = block.get("block_type")
-                        text_block = (block.get("content") or {}).get("text_block") or {}
-                        text = text_block.get("text")
-                        if not isinstance(text, str) or not text:
-                            continue
-                        if block.get("parent_id") in thinking_blocks or block_type == 10040:
-                            thinking_seen = True
-                            yield {"__type": "thinking", "content": text}
-                        elif block.get("parent_id") == "":
-                            answer_seen = True
-                            yield text
+                    if block.get("parent_id") in thinking_blocks or block_type == 10040:
+                        thinking_seen = True
+                        yield {"__type": "thinking", "content": text}
+                    elif not block.get("parent_id"):
+                        answer_seen = True
+                        yield text
             if not answer_seen and not thinking_seen:
                 raise UpstreamTransientError("Doubao returned an empty stream")
         finally:

@@ -19,6 +19,8 @@ keepalive/_creds_probe.json
 /zconfig.txt
 /zsign.txt
 data/browser-profile/
+data/reverse/
+data/diagnostics/
 
 # v3 React webui build artefacts (commit source, not built files)
 webui-new/node_modules/

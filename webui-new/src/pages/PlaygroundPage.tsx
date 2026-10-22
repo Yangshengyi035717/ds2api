@@ -40,6 +40,8 @@ const MODEL_LABELS: Record<string, string> = {
   'hunyuan-hy4-preview': 'Hunyuan HY4 Preview · hunyuan',
   'wenxin-smart-mode': 'Wenxin Smart Mode · wenxin',
   'doubao-seed': 'Doubao Seed · doubao',
+  'mimo-v2.6-pro': 'MiMo V2.6 Pro · 小米 MiMo',
+  'mimo-v2.6-flash': 'MiMo V2.6 Flash · 小米 MiMo',
   'deepseek-reasoner': 'DeepSeek Reasoner（旧别名）',
 }
 
@@ -48,7 +50,7 @@ export default function PlaygroundPage() {
   const { toast } = useToast()
 
   // Request parameters are forwarded by provider:
-  //   model          -> DeepSeek model or z.ai public alias
+  //   model          -> provider public model name
   //   thinking_mode  -> provider thinking/reasoning switch
   //   search_enabled -> provider web-search switch
   // temperature / top_p / max_tokens are ignored by the backend, so they
@@ -203,7 +205,7 @@ export default function PlaygroundPage() {
               <ModelSelector value={model} onChange={setModel} labels={MODEL_LABELS} />
               <p className="text-[11px] text-muted-foreground">
                 模型列表来自 <code className="font-mono">/v1/models</code>。
-                DeepSeek、z.ai 与 Kimi 会自动路由到对应账号池，是否思考由下面的开关
+                各提供商（含小米 MiMo）会自动路由到对应账号池，是否思考由下面的开关
                 （或服务端 <code className="font-mono">THINKING</code>）决定。
               </p>
             </div>

@@ -24,6 +24,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { get } from '@/lib/api'
 import type { ModelsResponse, RuntimeConfigResponse } from '@/lib/types'
+import { MIMO_REQUIRED_COOKIES } from '@/lib/providers'
 
 const ORIGIN = window.location.origin
 const API_BASE = `${ORIGIN}/v1`
@@ -212,6 +213,9 @@ export default function ApiDocsPage() {
     ?? 'wenxin-smart-mode'
   const doubaoModel = models.find((model) => model.provider === 'doubao')?.id
     ?? 'doubao-seed'
+  const mimoModel = models.find((model) => model.provider === 'mimo' && model.id === 'mimo-v2.6-pro')?.id
+    ?? models.find((model) => model.provider === 'mimo')?.id
+    ?? 'mimo-v2.6-pro'
 
   return (
     <div className="mx-auto max-w-[1180px] space-y-4 animate-fade-in">
@@ -302,7 +306,7 @@ export default function ApiDocsPage() {
           </Card>
 
           <Tabs defaultValue="quick">
-            <TabsList className="grid h-auto w-full grid-cols-2 sm:grid-cols-3 lg:grid-cols-11">
+            <TabsList className="flex h-auto w-full flex-wrap justify-start gap-1">
               <TabsTrigger value="quick">快速开始</TabsTrigger>
               <TabsTrigger value="openai">OpenAI</TabsTrigger>
               <TabsTrigger value="responses">Responses</TabsTrigger>
@@ -312,6 +316,7 @@ export default function ApiDocsPage() {
               <TabsTrigger value="hunyuan">混元</TabsTrigger>
               <TabsTrigger value="wenxin">文心</TabsTrigger>
               <TabsTrigger value="doubao">豆包</TabsTrigger>
+              <TabsTrigger value="mimo">小米 MiMo</TabsTrigger>
               <TabsTrigger value="sub2api">Sub2API</TabsTrigger>
               <TabsTrigger value="errors">错误与限制</TabsTrigger>
             </TabsList>
@@ -403,7 +408,7 @@ export default function ApiDocsPage() {
                 <CardHeader>
                   <CardTitle className="text-base">OpenAI Responses</CardTitle>
                   <CardDescription>
-                    兼容 Codex / Responses API；内部转换为 Chat Completions 内核，并按模型路由到 DeepSeek 或 z.ai。
+                    兼容 Codex / Responses API；内部转换为 Chat Completions 内核，并按模型路由到对应提供商账号池。
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3">
@@ -612,6 +617,62 @@ export default function ApiDocsPage() {
               </Card>
             </TabsContent>
 
+            <TabsContent value="mimo" className="space-y-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">小米 MiMo</CardTitle>
+                  <CardDescription>
+                    使用公开模型名选择 MiMo 账号池；客户端继续使用 DS2API API Key，
+                    MiMo 登录 Cookie 在账号池中管理。
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <MethodPath method="POST" path="/v1/chat/completions" />
+                  <CodeBlock
+                    code={openAiRequest(mimoModel)}
+                    title="OpenAI Chat Completions"
+                    language="json"
+                  />
+                  <CodeBlock
+                    code={openAiStream(mimoModel)}
+                    title="流式 cURL"
+                    language="bash"
+                  />
+                  <CodeBlock
+                    code={openAiRequest('mimo-v2.6-flash')}
+                    title="MiMo V2.6 Flash"
+                    language="json"
+                  />
+                  <div>
+                    <FieldRow name="公开模型名" description={`默认 mimo-v2.6-pro，另一个模型为 mimo-v2.6-flash；示例使用 ${mimoModel}，请求路由到 provider=mimo 账号。`} />
+                    <FieldRow name="认证" description={`Cookie-only；必须包含 ${MIMO_REQUIRED_COOKIES.join('、')}，值中的双引号需要保留。`} />
+                    <FieldRow name="账号字段" description="无需填写 Token；User ID 从 Cookie 的 userId 提取，不需要 Device ID、Session ID 或 Shield。" />
+                    <FieldRow name="导入" description="在「账号池 → 添加账号 → 小米 MiMo 导入」粘贴完整 Cookie 或包含 Cookie 的 HAR；分别返回 source=mimo-cookie / har:mimo-cookie。" />
+                    <FieldRow name="保活" description="只验证登录态并回写轮换 Cookie；Cookie 过期后需重新登录并导入。" />
+                  </div>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">MiMo Cookie 导入示例</CardTitle>
+                  <CardDescription>
+                    管理接口使用当前管理员会话，payload 也可传入完整 HAR 文本。
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <MethodPath method="POST" path="/admin/api/accounts/import" />
+                  <CodeBlock
+                    code={JSON.stringify({
+                      provider: 'mimo',
+                      payload: 'userId=YOUR_USER_ID; xiaomichatbot_serviceToken="YOUR_SERVICE_TOKEN"; xiaomichatbot_ph="YOUR_PH"',
+                    }, null, 2)}
+                    title="请求体（占位示例）"
+                    language="json"
+                  />
+                </CardContent>
+              </Card>
+            </TabsContent>
+
             <TabsContent value="sub2api" className="space-y-4">
               <Card>
                 <CardHeader>
@@ -692,7 +753,7 @@ export default function ApiDocsPage() {
                 </CardHeader>
                 <CardContent className="space-y-2 text-sm text-muted-foreground">
                   <p>1. 当前服务地址必须能从客户端所在机器访问。</p>
-                  <p>2. 账号池中至少有一个 idle 状态的 DeepSeek 账号。</p>
+                  <p>2. 账号池中至少有一个与请求模型所属 provider 对应的 idle 账号。</p>
                   <p>3. 使用 WebUI 创建的客户端 API Key，不要在客户端保存管理密码。</p>
                   <p>4. 默认只监听 127.0.0.1；跨机器调用需要修改 HOST 并配置反向代理与强密码。</p>
                   <p>5. 修改 .env 后必须重启服务才能生效。</p>

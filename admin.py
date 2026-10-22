@@ -29,6 +29,7 @@ from runtime_config import get_runtime_config
 from proxy_pool import get_proxy_pool
 from provider_registry import (
     PROVIDER_DEEPSEEK,
+    PROVIDER_MIMO,
     normalize_provider,
     doubao_model_name,
     doubao_upstream_model_name,
@@ -36,11 +37,15 @@ from provider_registry import (
     hunyuan_upstream_model_name,
     kimi_model_name,
     kimi_upstream_model_name,
+    available_mimo_models,
+    mimo_model_name,
+    mimo_upstream_model_name,
     wenxin_model_name,
     wenxin_upstream_model_name,
     zai_upstream_model_name,
 )
 from keepalive_scheduler import get_scheduler_or_store, notify_account_changed
+from mimo_adapter import mimo_user_id_from_cookies
 
 log = get_logger("admin")
 
@@ -218,7 +223,7 @@ class AdminPasswordChangeRequest(BaseModel):
 
 
 class AccountAddRequest(BaseModel):
-    token: str
+    token: str = ""
     cookies: str
     email: str | None = ""
     proxy_id: str | None = ""
@@ -697,6 +702,9 @@ async def env_info(request: Request):
         "wenxin_upstream_model": wenxin_upstream_model_name(),
         "doubao_model_name": doubao_model_name(),
         "doubao_upstream_model": doubao_upstream_model_name(),
+        "mimo_model_name": mimo_model_name(),
+        "mimo_upstream_model": mimo_upstream_model_name(),
+        "mimo_models": available_mimo_models(),
         "model_name_source": runtime_snapshot["source"],
         "model_routes_configured": bool(os.environ.get("MODEL_ROUTES", "").strip()),
         "rate_limit": {
@@ -735,6 +743,8 @@ async def env_info(request: Request):
             {"name": "WENXIN_UPSTREAM_MODEL", "value": wenxin_upstream_model_name(), "is_default": _flag("WENXIN_UPSTREAM_MODEL") == "default"},
             {"name": "DOUBAO_MODEL_NAME", "value": doubao_model_name(), "is_default": _flag("DOUBAO_MODEL_NAME") == "default"},
             {"name": "DOUBAO_UPSTREAM_MODEL", "value": doubao_upstream_model_name(), "is_default": _flag("DOUBAO_UPSTREAM_MODEL") == "default"},
+            {"name": "MIMO_MODEL_NAME", "value": mimo_model_name(), "is_default": _flag("MIMO_MODEL_NAME") == "default"},
+            {"name": "MIMO_UPSTREAM_MODEL", "value": mimo_upstream_model_name(), "is_default": _flag("MIMO_UPSTREAM_MODEL") == "default"},
             {
                 "name": "DEEPSEEK_ADMIN_PASSWORD",
                 "value": "***" if password_state["set"] else "",
@@ -953,10 +963,17 @@ async def import_account(req: CredentialImportRequest, request: Request, respons
     except CredentialImportError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    provider = normalize_provider(
-        req.provider or imported.provider or PROVIDER_DEEPSEEK
+    try:
+        provider = normalize_provider(
+            req.provider or imported.provider or PROVIDER_DEEPSEEK
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    user_id = (
+        mimo_user_id_from_cookies(imported.cookies)
+        if provider == PROVIDER_MIMO
+        else (req.user_id or imported.user_id or "").strip()
     )
-    user_id = (req.user_id or imported.user_id or "").strip()
     refresh_token = (
         req.refresh_token or imported.refresh_token or ""
     ).strip()
@@ -965,7 +982,11 @@ async def import_account(req: CredentialImportRequest, request: Request, respons
     topic_id = (req.topic_id or "").strip()
     pool = get_pool()
     try:
-        existing = pool.find_by_token(imported.token, provider=provider)
+        existing = (
+            pool.find_by_user_id(user_id, provider=provider)
+            if provider == PROVIDER_MIMO
+            else pool.find_by_token(imported.token, provider=provider)
+        )
         if existing is not None:
             acct = pool.update(
                 existing.id,

@@ -50,6 +50,8 @@ def test_models_expose_sub2api_metadata(compat_client):
         "hunyuan-hy4-preview",
         "wenxin-smart-mode",
         "doubao-seed",
+        "mimo-v2.6-pro",
+        "mimo-v2.6-flash",
     }
     deepseek = next(model for model in body["data"] if model["id"] == "deepseek-chat")
     zai = next(model for model in body["data"] if model["id"] == "glm-5.3-flash")
@@ -173,6 +175,7 @@ def test_provider_manifest_is_authenticated_and_descriptive(compat_client):
         "hunyuan",
         "wenxin",
         "doubao",
+        "mimo",
     }
     assert body["pricing"]["automatic"] is False
 

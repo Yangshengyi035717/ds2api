@@ -29,6 +29,7 @@
 - **混元兼容** — AI Studio `hy4-preview` SSE 协议、Cookie 账号池与协议保活
 - **文心兼容** — chat.baidu.com `smartMode` SSE 协议、HAR 凭据导入与账号保活
 - **豆包兼容** — doubao.com `chat/completion` SSE 协议与登录 Cookie 账号池
+- **小米 MiMo 兼容** — MiMo Studio Cookie 账号池、Pro / Flash 对话与只读协议保活
 - **代理池** — 一号一代理、出口绑定、连通性检测与加密存储
 - **Sub2API 上游适配** — 富模型目录、Provider Manifest、价格/倍率配置和同步脚本
 - **客户端限流** — 滑动窗口，按 API key 和 IP 独立计数；响应头 `X-RateLimit-*`
@@ -149,6 +150,23 @@ doubao-seed → model_item_key=0
 ```
 
 豆包的 `msToken` 随 Cookie 轮换，无需单独保存；Cookie 失效后重新导入即可。
+
+### 添加小米 MiMo 账号
+
+在 WebUI → 账号池 → 添加账号 → **小米 MiMo 导入** 中粘贴已登录
+`aistudio.xiaomimimo.com` 请求的完整 Cookie，或导入包含 Cookie 的 HAR。
+Cookie 必须包含 `userId`、`xiaomichatbot_serviceToken` 和 `xiaomichatbot_ph`，
+不需要另填 Bearer Token。Cookie 值里的双引号、`+`、`/` 和 `=` 会正确解析。
+浏览器导出的脱敏 HAR 可能不含 Cookie，此时需要另行复制完整 Cookie 请求头。
+
+API 文档和 Playground 可选择 `mimo-v2.6-pro`（默认）或 `mimo-v2.6-flash`。
+支持现有 OpenAI Chat Completions、Responses 和 Anthropic Messages 文本接口，
+流式正文与 `reasoning_content` 分开返回，每轮发送客户端提供的完整历史。
+
+保活仅调用只读会话列表并保存上游轮换的 Cookie，不创建聊天或消耗生成额度；
+它不能恢复已经过期或被退出登录吊销的凭据，失效后需要重新登录并导入。
+代理绑定沿用账号池配置。当前接入范围为文本对话，图片上传不在本次实现内。
+协议证据、复现步骤及边界见 [MiMo 接入说明](docs/mimo-provider.md)。
 
 ### 服务器浏览器登录（noVNC）
 

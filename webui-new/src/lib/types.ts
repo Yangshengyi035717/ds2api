@@ -3,6 +3,8 @@
  * Keep in sync with `admin.py` and `server.py`.
  */
 
+import type { AccountProvider } from './providers'
+
 export interface StatsResponse {
   total_requests: number
   success_requests: number
@@ -31,7 +33,7 @@ export interface Account {
   id: string
   email: string
   source: string
-  provider: 'deepseek' | 'zai' | string
+  provider: AccountProvider | string
   provider_label: string
   state: 'idle' | 'busy' | 'error' | string
   error_count: number
@@ -68,7 +70,7 @@ export interface AccountsResponse {
 
 export interface KeepaliveJob {
   account_id: string
-  provider: string
+  provider: AccountProvider | string
   enabled: boolean
   interval_secs: number
   next_run_at: number
@@ -165,7 +167,7 @@ export interface ModelInfo {
   object?: string
   created?: number
   owned_by?: string
-  provider?: string
+  provider?: AccountProvider | string
   display_name?: string
   reasoning?: boolean
 }

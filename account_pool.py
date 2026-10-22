@@ -28,11 +28,13 @@ from hunyuan_adapter import (
 )
 from wenxin_adapter import WenxinAdapter, wenxin_baiduid, wenxin_cookie_value
 from doubao_adapter import DoubaoAdapter, doubao_cookie_value
+from mimo_adapter import MimoAdapter, mimo_user_id_from_cookies, mimo_validate_cookies
 from provider_registry import (
     PROVIDER_DEEPSEEK,
     PROVIDER_DOUBAO,
     PROVIDER_HUNYUAN,
     PROVIDER_KIMI,
+    PROVIDER_MIMO,
     PROVIDER_QWEN,
     PROVIDER_WENXIN,
     PROVIDER_ZAI,
@@ -143,7 +145,9 @@ class Account:
         DeepSeekAdapter | ZaiAdapter | KimiAdapter | QwenAdapter | HunyuanAdapter
         | WenxinAdapter
         | DoubaoAdapter
+        | MimoAdapter
     ] = field(default=None, repr=False)
+    _mimo_in_use: bool = field(default=False, repr=False)
 
     @property
     def adapter(
@@ -156,6 +160,7 @@ class Account:
         | HunyuanAdapter
         | WenxinAdapter
         | DoubaoAdapter
+        | MimoAdapter
     ):
         if self._adapter is None:
             proxy_url = self.proxy.strip()
@@ -217,6 +222,15 @@ class Account:
                     device_id=self.device_id,
                     web_id=self.user_id,
                     tea_uuid=self.topic_id,
+                    session_id=self.session_id,
+                    proxy=proxy_url or None,
+                )
+            elif self.provider == PROVIDER_MIMO:
+                self._adapter = MimoAdapter(
+                    token=self.token,
+                    cookies=self.cookies,
+                    device_id=self.device_id,
+                    user_id=self.user_id,
                     session_id=self.session_id,
                     proxy=proxy_url or None,
                 )
@@ -339,6 +353,15 @@ class AccountPool:
         ):
             acct.state = "error"
             acct.last_error = "Doubao account is missing sessionid cookie"
+        if acct.provider == PROVIDER_MIMO:
+            try:
+                mimo_validate_cookies(acct.cookies)
+            except ValueError:
+                acct.state = "error"
+                acct.last_error = (
+                    "MiMo account requires userId/xiaomichatbot_serviceToken/"
+                    "xiaomichatbot_ph cookies"
+                )
         if acct.proxy_id:
             proxy_entry = get_proxy_pool().get_by_id(acct.proxy_id)
             if proxy_entry is None or not proxy_entry.enabled:
@@ -387,6 +410,7 @@ class AccountPool:
                 PROVIDER_HUNYUAN,
                 PROVIDER_WENXIN,
                 PROVIDER_DOUBAO,
+                PROVIDER_MIMO,
             }:
                 log.warning("skipping_account_missing_credentials", extra={"id": item.get("id")})
                 continue
@@ -428,6 +452,8 @@ class AccountPool:
                     account_value.user_id
                     or hunyuan_user_id_from_cookies(account_value.cookies)
                 )
+            if account_value.provider == PROVIDER_MIMO:
+                account_value.user_id = mimo_user_id_from_cookies(account_value.cookies)
             self._append_loaded(account_value)
 
     def _ensure_store_dir(self):
@@ -507,11 +533,15 @@ class AccountPool:
             )
         if provider == PROVIDER_DOUBAO and not device_id:
             device_id = doubao_cookie_value(cookies, "device_id")
+        if provider == PROVIDER_MIMO:
+            mimo_validate_cookies(cookies)
+            user_id = mimo_user_id_from_cookies(cookies)
         if not token and provider not in {
             PROVIDER_QWEN,
             PROVIDER_HUNYUAN,
             PROVIDER_WENXIN,
             PROVIDER_DOUBAO,
+            PROVIDER_MIMO,
         }:
             raise ValueError("Token is required")
         if provider == PROVIDER_ZAI and not user_id:
@@ -578,6 +608,17 @@ class AccountPool:
         with self._lock:
             return [(account.id, account.provider) for account in self._accounts]
 
+    def _invalidate_adapter_locked(self, acct: Account) -> None:
+        adapter = acct._adapter
+        acct._adapter = None
+        # A request owns its adapter until release, even after an auth error
+        # changes the public account state. Its stream must close first.
+        if acct.provider == PROVIDER_MIMO and adapter is not None and not acct._mimo_in_use:
+            try:
+                adapter.close()
+            except Exception:
+                log.warning("mimo_adapter_close_failed", extra={"account_id": acct.id})
+
     def update_keepalive_credentials(
         self,
         account_id: str,
@@ -602,21 +643,48 @@ class AccountPool:
                 if refresh_token is None
                 else refresh_token.strip()
             )
+            new_user_id = acct.user_id
+            if acct.provider == PROVIDER_MIMO:
+                mimo_validate_cookies(new_cookies)
+                new_user_id = mimo_user_id_from_cookies(new_cookies)
             if (
                 new_cookies == acct.cookies
                 and new_device_id == acct.device_id
                 and new_token == acct.token
                 and new_refresh_token == acct.refresh_token
+                and new_user_id == acct.user_id
             ):
                 return acct
             acct.token = new_token
             acct.refresh_token = new_refresh_token
             acct.cookies = new_cookies
+            acct.user_id = new_user_id
             acct.device_id = new_device_id
             acct.updated_at = _now()
-            acct._adapter = None
+            self._invalidate_adapter_locked(acct)
             self._save_persisted_accounts_locked()
             return acct
+
+    def persist_adapter_cookies(self, acct: Account, adapter=None) -> bool:
+        """Persist MiMo jar rotation after a request has stopped reading."""
+        adapter = acct._adapter if adapter is None else adapter
+        if acct.provider != PROVIDER_MIMO or adapter is None:
+            return False
+        cookies = str(getattr(adapter, "cookies", "") or "").strip()
+        with self._lock:
+            # A concurrent import/keepalive may have replaced credentials.
+            # Never let the retired request overwrite that newer state.
+            if acct._adapter is not adapter or not any(a is acct for a in self._accounts):
+                return False
+            if cookies == acct.cookies:
+                return False
+            mimo_validate_cookies(cookies)
+            acct.cookies = cookies
+            acct.user_id = mimo_user_id_from_cookies(cookies)
+            acct.updated_at = _now()
+            self._invalidate_adapter_locked(acct)
+            self._save_persisted_accounts_locked()
+            return True
 
     def persist_adapter_tokens(self, acct: Account) -> bool:
         """Persist Kimi access/refresh rotation from a live adapter."""
@@ -655,6 +723,22 @@ class AccountPool:
                 None,
             )
 
+    def find_by_user_id(self, user_id: str, provider: str) -> Optional[Account]:
+        """Find a cookie-authenticated account within one provider."""
+        value = (user_id or "").strip()
+        if not value:
+            return None
+        wanted = normalize_provider(provider)
+        with self._lock:
+            return next(
+                (
+                    account
+                    for account in self._accounts
+                    if account.provider == wanted and account.user_id == value
+                ),
+                None,
+            )
+
     def update(self, account_id: str, token: str | None = None,
                cookies: str | None = None, email: str | None = None,
                proxy_id: str | None = None,
@@ -680,6 +764,10 @@ class AccountPool:
                 if provider is None
                 else normalize_provider(provider)
             )
+            if new_provider == PROVIDER_MIMO:
+                # An explicit empty token is valid for cookie authentication.
+                new_token = acct.token if token is None else token.strip()
+                new_cookies = acct.cookies if cookies is None else cookies.strip()
             new_user_id = (
                 acct.user_id if user_id is None else user_id.strip()
             )
@@ -723,6 +811,9 @@ class AccountPool:
                 new_device_id = new_device_id or doubao_cookie_value(
                     new_cookies, "device_id"
                 )
+            if new_provider == PROVIDER_MIMO:
+                mimo_validate_cookies(new_cookies)
+                new_user_id = mimo_user_id_from_cookies(new_cookies)
             new_proxy_id = (
                 acct.proxy_id
                 if proxy_id is None
@@ -733,6 +824,7 @@ class AccountPool:
                 PROVIDER_HUNYUAN,
                 PROVIDER_WENXIN,
                 PROVIDER_DOUBAO,
+                PROVIDER_MIMO,
             }:
                 raise ValueError("Token cannot be empty")
             if new_provider == PROVIDER_ZAI and not new_user_id:
@@ -776,6 +868,8 @@ class AccountPool:
                 or new_topic_id != acct.topic_id
             )
             proxy_changed = new_proxy_id != acct.proxy_id
+            if credentials_changed or proxy_changed:
+                self._invalidate_adapter_locked(acct)
             acct.token = new_token
             acct.cookies = new_cookies
             acct.email = new_email or acct.email
@@ -788,10 +882,8 @@ class AccountPool:
             acct.topic_id = new_topic_id
             acct.proxy_id = new_proxy_id
             acct.updated_at = _now()
-            if credentials_changed or proxy_changed:
-                acct._adapter = None
             if credentials_changed:
-                acct.state = "idle"
+                acct.state = "busy" if acct._mimo_in_use else "idle"
                 acct.error_count = 0
                 acct.last_error = ""
             self._save_persisted_accounts_locked()
@@ -820,7 +912,7 @@ class AccountPool:
         with self._lock:
             for account in self._accounts:
                 if account.proxy_id == proxy_id:
-                    account._adapter = None
+                    self._invalidate_adapter_locked(account)
                     changed += 1
         return changed
 
@@ -886,6 +978,8 @@ class AccountPool:
                     wanted is None or acct.provider == wanted
                 ):
                     acct.state = "busy"
+                    if acct.provider == PROVIDER_MIMO:
+                        acct._mimo_in_use = True
                     acct.last_used = time.time()
                     return acct
             return None
@@ -913,6 +1007,8 @@ class AccountPool:
                     and (wanted is None or acct.provider == wanted)
                 ):
                     acct.state = "busy"
+                    if acct.provider == PROVIDER_MIMO:
+                        acct._mimo_in_use = True
                     acct.last_used = time.time()
                     return acct
             return None
@@ -920,6 +1016,7 @@ class AccountPool:
     def release(self, acct: Account):
         """Mark account back to idle unless it was already marked as error."""
         with self._lock:
+            acct._mimo_in_use = False
             if acct.state == "busy":
                 acct.state = "idle"
 
@@ -969,10 +1066,10 @@ class AccountPool:
     def mark_recovered(self, acct: Account) -> None:
         """Public hook: reset error counters and return to idle."""
         with self._lock:
-            acct.state = "idle"
+            acct.state = "busy" if acct._mimo_in_use else "idle"
             acct.error_count = 0
             acct.last_error = ""
-            acct._adapter = None
+            self._invalidate_adapter_locked(acct)
 
     # ── Health check / relogin ─────────────────────────────────
 
@@ -985,6 +1082,8 @@ class AccountPool:
             else:
                 adapter.create_session()
             self.persist_adapter_tokens(acct)
+            if acct.provider == PROVIDER_MIMO:
+                self.persist_adapter_cookies(acct, adapter)
             return True
         except Exception as e:
             with self._lock:

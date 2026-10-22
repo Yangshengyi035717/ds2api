@@ -69,6 +69,82 @@ def test_doubao_sse_emits_chunk_delta_text():
     assert response.closed is True
 
 
+def test_doubao_sse_preserves_text_before_chunk_delta():
+    adapter = _adapter()
+    lines = _sse("FULL_MSG_NOTIFY", {
+        "message": {
+            "user_type": 1,
+            "content_block": [{
+                "block_type": 10000,
+                "content": {"text_block": {"text": "Do not echo this prompt"}},
+            }],
+        }
+    })
+    lines += _sse("STREAM_MSG_NOTIFY", {
+        "content": {
+            "content_block": [{
+                "block_type": 10000,
+                "block_id": "answer-1",
+                "content": {"text_block": {"text": "DO"}},
+            }]
+        }
+    })
+    lines += _sse("STREAM_CHUNK", {
+        "patch_op": [{
+            "patch_object": 1,
+            "patch_value": {
+                "content_block": [{
+                    "block_type": 10000,
+                    "block_id": "answer-1",
+                    "content": {"text_block": {"text": "U"}},
+                }]
+            },
+        }]
+    })
+    lines += _sse("CHUNK_DELTA", {"text": "BAO_TEST_OK"})
+    response = _Response(lines)
+    adapter._open = lambda *_a, **_k: response
+
+    assert adapter.chat("session", "prompt") == ("DOUBAO_TEST_OK", "")
+    assert response.closed is True
+
+
+def test_doubao_sse_accepts_answer_in_initial_notification_only():
+    adapter = _adapter()
+    response = _Response(_sse("STREAM_MSG_NOTIFY", {
+        "content": {
+            "content_block": [{
+                "block_type": 10000,
+                "content": {"text_block": {"text": "你好"}},
+            }]
+        }
+    }))
+    adapter._open = lambda *_a, **_k: response
+
+    assert list(adapter.chat_stream("session", "hi")) == ["你好"]
+    assert response.closed is True
+
+
+def test_doubao_initial_thinking_text_stays_in_reasoning_channel():
+    adapter = _adapter()
+    lines = _sse("STREAM_MSG_NOTIFY", {
+        "content": {
+            "content_block": [{
+                "block_type": 10040,
+                "block_id": "think-1",
+                "content": {"text_block": {"text": "先思考"}},
+            }]
+        }
+    })
+    lines += _sse("CHUNK_DELTA", {"text": "回答"})
+    response = _Response(lines)
+    adapter._open = lambda *_a, **_k: response
+
+    assert adapter.chat("session", "hi", thinking_enabled=True) == (
+        "回答", "先思考"
+    )
+
+
 def test_doubao_sse_maps_thinking_block_to_reasoning():
     adapter = _adapter()
     lines = []

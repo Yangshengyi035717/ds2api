@@ -6,6 +6,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { post, ApiCallError } from '@/lib/api'
 import { toast } from '@/hooks/use-toast'
 import type { Account, CredentialImportResponse } from '@/lib/types'
+import { MIMO_REQUIRED_COOKIES, type AccountProvider } from '@/lib/providers'
 
 const DEEPSEEK_EXPORT_SCRIPT = `(() => {
   const read = (key) => localStorage.getItem(key)
@@ -116,7 +117,7 @@ const KIMI_EXPORT_SCRIPT = `(() => {
 
 interface Props {
   onImported: (account: Account) => void
-  provider?: 'deepseek' | 'zai' | 'kimi' | 'hunyuan' | 'wenxin' | 'doubao'
+  provider?: Exclude<AccountProvider, 'qianwen'>
 }
 
 export function CredentialImportPanel({ onImported, provider = 'deepseek' }: Props) {
@@ -129,25 +130,29 @@ export function CredentialImportPanel({ onImported, provider = 'deepseek' }: Pro
   const isHunyuan = provider === 'hunyuan'
   const isWenxin = provider === 'wenxin'
   const isDoubao = provider === 'doubao'
+  const isMimo = provider === 'mimo'
+  const isCookieImport = isHunyuan || isWenxin || isDoubao || isMimo
 
   const placeholder = useMemo(
     () =>
-      isZai
-        ? '粘贴在 zchat.z.ai 控制台运行“复制导出脚本”后输出的 JSON。'
-        : isKimi
-          ? '粘贴在 www.kimi.com 控制台运行“复制导出脚本”后输出的 JSON。'
-          : isHunyuan
-            ? '粘贴 api.hunyuan.tencent.com 请求的完整 Cookie 请求头，或包含该请求的 HAR。'
-            : isWenxin
-              ? '粘贴包含 chat.baidu.com/aichat/api/conversation 请求的 HAR。'
-              : isDoubao
-                ? '粘贴 www.doubao.com 请求的完整 Cookie 请求头，或包含该请求的 HAR。'
-                : '粘贴 DevTools 导出的 HAR，或在 chat.deepseek.com 控制台运行“复制导出脚本”后粘贴输出的 JSON。',
-    [isDoubao, isHunyuan, isKimi, isWenxin, isZai],
+      isMimo
+        ? '粘贴小米 MiMo 已登录请求的完整 Cookie 请求头，或包含该 Cookie 的 HAR。保留值中的双引号。'
+        : isZai
+          ? '粘贴在 zchat.z.ai 控制台运行“复制导出脚本”后输出的 JSON。'
+          : isKimi
+            ? '粘贴在 www.kimi.com 控制台运行“复制导出脚本”后输出的 JSON。'
+            : isHunyuan
+              ? '粘贴 api.hunyuan.tencent.com 请求的完整 Cookie 请求头，或包含该请求的 HAR。'
+              : isWenxin
+                ? '粘贴包含 chat.baidu.com/aichat/api/conversation 请求的 HAR。'
+                : isDoubao
+                  ? '粘贴 www.doubao.com 请求的完整 Cookie 请求头，或包含该请求的 HAR。'
+                  : '粘贴 DevTools 导出的 HAR，或在 chat.deepseek.com 控制台运行“复制导出脚本”后粘贴输出的 JSON。',
+    [isDoubao, isHunyuan, isKimi, isMimo, isWenxin, isZai],
   )
 
   const copyScript = async () => {
-    if (isHunyuan || isWenxin || isDoubao) return
+    if (isCookieImport) return
     try {
       await navigator.clipboard.writeText(
         isKimi
@@ -180,15 +185,17 @@ export function CredentialImportPanel({ onImported, provider = 'deepseek' }: Pro
       onImported(res.account)
       toast({
         title: res.action === 'updated' ? '账号凭据已更新' : '账号已导入',
-        description: isHunyuan
-          ? '已导入 Hunyuan Cookie'
-          : isWenxin
-            ? '已导入 Wenxin 登录 Cookie'
-            : isDoubao
-              ? '已导入 Doubao 登录 Cookie'
-          : res.import.has_device_id
-            ? '已包含 Device ID'
-            : '未包含 Device ID，建议重新导出',
+        description: isMimo
+          ? '已导入小米 MiMo 登录 Cookie；Cookie 过期后需重新登录并导入'
+          : isHunyuan
+            ? '已导入 Hunyuan Cookie'
+            : isWenxin
+              ? '已导入 Wenxin 登录 Cookie'
+              : isDoubao
+                ? '已导入 Doubao 登录 Cookie'
+                : res.import.has_device_id
+                  ? '已包含 Device ID'
+                  : '未包含 Device ID，建议重新导出',
         variant: 'success',
       })
     } catch (e) {
@@ -202,7 +209,17 @@ export function CredentialImportPanel({ onImported, provider = 'deepseek' }: Pro
   return (
     <div className="space-y-4">
       <div className="rounded-md border bg-muted/40 p-3 text-xs leading-relaxed text-muted-foreground">
-        {isZai ? (
+        {isMimo ? (
+          <p>
+            小米 MiMo 使用 Cookie-only 认证。请在已登录的小米 MiMo 网页打开
+            DevTools → Network，选择登录后的聊天请求，复制完整 Cookie 请求头，
+            或导出包含 Cookie 的 HAR。必须包含{' '}
+            <code className="font-mono">{MIMO_REQUIRED_COOKIES.join('、')}</code>；
+            请保留值中的双引号。User ID 从 Cookie 的 userId 提取，
+            无需填写 Token、Device ID、Session ID 或 Shield。
+            保活只验证登录态并回写轮换 Cookie；Cookie 过期后需重新登录并导入。
+          </p>
+        ) : isZai ? (
           <p>
             请在已登录的 <code className="font-mono">zchat.z.ai</code>{' '}
             页面运行导出脚本。脚本会读取 Token、用户 ID、Device ID 与 Cookie；
@@ -252,19 +269,21 @@ export function CredentialImportPanel({ onImported, provider = 'deepseek' }: Pro
       <div className="space-y-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <Label htmlFor="credential-import">
-            {isZai
-              ? 'z.ai 浏览器导出 JSON'
-              : isKimi
-                ? 'Kimi 浏览器导出 JSON'
-                : isHunyuan
-                  ? '混元 Cookie 或 HAR'
-                  : isWenxin
-                    ? '文心 Cookie 或 HAR'
-                    : isDoubao
-                      ? '豆包 Cookie 或 HAR'
-                  : '凭据内容（HAR 或浏览器导出 JSON）'}
+            {isMimo
+              ? '小米 MiMo Cookie 或 HAR'
+              : isZai
+                ? 'z.ai 浏览器导出 JSON'
+                : isKimi
+                  ? 'Kimi 浏览器导出 JSON'
+                  : isHunyuan
+                    ? '混元 Cookie 或 HAR'
+                    : isWenxin
+                      ? '文心 Cookie 或 HAR'
+                      : isDoubao
+                        ? '豆包 Cookie 或 HAR'
+                        : '凭据内容（HAR 或浏览器导出 JSON）'}
           </Label>
-          {!isHunyuan && !isWenxin && !isDoubao && (
+          {!isCookieImport && (
             <Button type="button" size="sm" variant="outline" onClick={copyScript}>
               <ClipboardCopy className="h-3.5 w-3.5" />
               复制{isZai ? ' z.ai ' : isKimi ? ' Kimi ' : '浏览器'}导出脚本
@@ -282,17 +301,19 @@ export function CredentialImportPanel({ onImported, provider = 'deepseek' }: Pro
         <p className="text-[11px] text-muted-foreground">
           {charCount > 0
             ? `${charCount.toLocaleString()} 字符`
-            : isZai
-              ? '服务端只提取 token / user_id / device_id / cookie'
-              : isKimi
-                ? '服务端只提取 access_token / refresh_token / device_id / cookie'
-                : isHunyuan
-                  ? '支持 Cookie 字符串或整份 HAR，服务端只提取 hunyuan_user / hunyuan_token / Cookie'
-                  : isWenxin
-                    ? '支持 Cookie 字符串或整份 HAR，服务端只提取 BDUSS / BAIDUID 与登录 Cookie'
-                    : isDoubao
-                      ? '支持 Cookie 字符串或整份 HAR，服务端只提取 sessionid / ttwid / device_id'
-                  : '支持整份 HAR，服务端只提取 token / cookie / device_id'}
+            : isMimo
+              ? '支持完整 Cookie 或 HAR，服务端提取 MiMo Cookie 与 userId；不需要 Token 或设备字段'
+              : isZai
+                ? '服务端只提取 token / user_id / device_id / cookie'
+                : isKimi
+                  ? '服务端只提取 access_token / refresh_token / device_id / cookie'
+                  : isHunyuan
+                    ? '支持 Cookie 字符串或整份 HAR，服务端只提取 hunyuan_user / hunyuan_token / Cookie'
+                    : isWenxin
+                      ? '支持 Cookie 字符串或整份 HAR，服务端只提取 BDUSS / BAIDUID 与登录 Cookie'
+                      : isDoubao
+                        ? '支持 Cookie 字符串或整份 HAR，服务端只提取 sessionid / ttwid / device_id'
+                        : '支持整份 HAR，服务端只提取 token / cookie / device_id'}
         </p>
       </div>
 
@@ -302,33 +323,35 @@ export function CredentialImportPanel({ onImported, provider = 'deepseek' }: Pro
           <li>
             在浏览器打开并登录{' '}
             <code className="font-mono">
-              {isZai
-                ? 'zchat.z.ai'
-                : isKimi
-                  ? 'www.kimi.com'
-                  : isHunyuan
-                    ? 'aistudio.tencent.com'
-                    : isWenxin
-                      ? 'wenxin.baidu.com'
-                      : isDoubao
-                        ? 'www.doubao.com'
-                    : 'chat.deepseek.com'}
+              {isMimo
+                ? '小米 MiMo 聊天网页'
+                : isZai
+                  ? 'zchat.z.ai'
+                  : isKimi
+                    ? 'www.kimi.com'
+                    : isHunyuan
+                      ? 'aistudio.tencent.com'
+                      : isWenxin
+                        ? 'wenxin.baidu.com'
+                        : isDoubao
+                          ? 'www.doubao.com'
+                          : 'chat.deepseek.com'}
             </code>。
           </li>
           <li>
-            {isHunyuan || isWenxin || isDoubao
-              ? isWenxin
-                ? '打开 DevTools → Network，选择任一 chat.baidu.com 请求。'
-                : isDoubao
-                  ? '打开 DevTools → Network，选择任一 www.doubao.com 请求。'
-                  : '打开 DevTools → Network，选择一个 api.hunyuan.tencent.com 请求。'
+            {isCookieImport
+              ? isMimo
+                ? '打开 DevTools → Network，选择登录后的 MiMo 聊天请求，查看 Request Headers。'
+                : isWenxin
+                  ? '打开 DevTools → Network，选择任一 chat.baidu.com 请求。'
+                  : isDoubao
+                    ? '打开 DevTools → Network，选择任一 www.doubao.com 请求。'
+                    : '打开 DevTools → Network，选择一个 api.hunyuan.tencent.com 请求。'
               : '打开 DevTools → Console，运行上方脚本。'}
           </li>
           <li>
-            {isHunyuan || isWenxin || isDoubao
-              ? isWenxin
-                ? '复制完整 Cookie 请求头，或导出 HAR 并粘贴到上面。'
-                : '复制完整 Cookie 请求头，或导出 HAR 并粘贴到上面。'
+            {isCookieImport
+              ? '复制完整 Cookie 请求头，或导出包含 Cookie 的 HAR 并粘贴到上面。'
               : '脚本会把 JSON 复制到剪贴板，粘贴到上面即可。'}
           </li>
         </ol>
@@ -342,13 +365,19 @@ export function CredentialImportPanel({ onImported, provider = 'deepseek' }: Pro
           </p>
           <ul className="mt-1 space-y-0.5 text-muted-foreground">
             <li>来源：{result.import.source}</li>
-            <li>Token 长度：{result.import.token_length}</li>
+            {isMimo ? (
+              <li>认证：Cookie-only</li>
+            ) : (
+              <li>Token 长度：{result.import.token_length}</li>
+            )}
             <li>Cookie：{result.import.cookie_names.join(', ') || '无'}</li>
-            <li>Device ID：{result.import.device_id_preview || '未提供'}</li>
+            {!isMimo && (
+              <li>Device ID：{result.import.device_id_preview || '未提供'}</li>
+            )}
             {result.import.has_user_id && (
               <li>User ID：{result.import.user_id_preview}</li>
             )}
-            {result.import.has_refresh_token && (
+            {!isMimo && result.import.has_refresh_token && (
               <li>Refresh Token：已导入</li>
             )}
             {result.import.warnings.map((warning) => (

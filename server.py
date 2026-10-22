@@ -29,6 +29,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.background import BackgroundTask
 
 from adapter import (
     DeepSeekAdapter,
@@ -84,6 +85,7 @@ from provider_registry import (
     PROVIDER_DOUBAO,
     PROVIDER_HUNYUAN,
     PROVIDER_KIMI,
+    PROVIDER_MIMO,
     PROVIDER_QWEN,
     PROVIDER_WENXIN,
     PROVIDER_ZAI,
@@ -91,6 +93,10 @@ from provider_registry import (
     available_kimi_models,
     available_doubao_models,
     available_wenxin_models,
+    available_mimo_models,
+    mimo_model_name,
+    mimo_public_model,
+    mimo_upstream_model,
     hunyuan_public_model,
     hunyuan_upstream_model,
     kimi_model_name,
@@ -117,6 +123,7 @@ from qwen_adapter import QwenAuthError
 from hunyuan_adapter import HunyuanAuthError
 from wenxin_adapter import WenxinAuthError
 from doubao_adapter import DoubaoAuthError
+from mimo_adapter import MimoAuthError
 
 load_dotenv()
 configure_from_env()
@@ -127,6 +134,7 @@ MODEL_CREATED_AT = int(os.environ.get("MODEL_CREATED_AT", str(int(time.time())))
 #: Seconds a parent gateway should wait before retrying after an upstream
 #: transient outage ('服务器暂时不可用' / generation_err).
 TRANSIENT_RETRY_AFTER_SECS = os.environ.get("DEEPSEEK_TRANSIENT_RETRY_AFTER", "5")
+MIMO_AUTH_MESSAGE = "MiMo 登录 Cookie 已失效，请重新导入"
 
 
 def _model_name() -> str:
@@ -148,6 +156,8 @@ def _public_model_for_request(model: str | None, provider: str) -> str:
         return wenxin_public_model(requested)
     if provider == PROVIDER_DOUBAO:
         return doubao_public_model(requested)
+    if provider == PROVIDER_MIMO:
+        return mimo_public_model(requested)
     return canonical_model_name(requested) if requested else _model_name()
 
 
@@ -164,6 +174,8 @@ def _upstream_model_for_request(model: str | None, provider: str) -> str | None:
         return wenxin_upstream_model(model)
     if provider == PROVIDER_DOUBAO:
         return doubao_upstream_model(model)
+    if provider == PROVIDER_MIMO:
+        return mimo_upstream_model(model)
     return str(model or "").strip() or None
 
 
@@ -633,6 +645,10 @@ def _model_display_name(name: str) -> str:
             .strip()
             or "Doubao Seed"
         )
+    if name in available_mimo_models():
+        if name == mimo_model_name():
+            return os.environ.get("MIMO_MODEL_DISPLAY_NAME", "MiMo V2.6 Pro").strip() or "MiMo V2.6 Pro"
+        return "MiMo V2.6 Flash"
     if name == snapshot["model_name"]:
         return str(snapshot["display_name"])
     configured = os.environ.get("MODEL_DISPLAY_NAME", "").strip()
@@ -663,6 +679,9 @@ def _available_model_names() -> list[str]:
     for doubao_name in available_doubao_models():
         if doubao_name not in names:
             names.append(doubao_name)
+    for mimo_name in available_mimo_models():
+        if mimo_name not in names:
+            names.append(mimo_name)
     return names
 
 
@@ -690,12 +709,12 @@ class AcquiredAccount:
         self._provider = normalize_provider(getattr(acct, "provider", PROVIDER_DEEPSEEK))
         self._session_id: str | None = None
         self._parent_message_id: int | None = None
-        self._cache_key = cache_key
+        self._cache_key = None if self._provider == PROVIDER_MIMO else cache_key
         self._cached_session: ChatSession | None = None
         self._released = False
         # If we have a cache key, try to reuse the existing session first.
-        if cache_key:
-            cached = SESSION_CACHE.get(cache_key)
+        if self._cache_key:
+            cached = SESSION_CACHE.get(self._cache_key)
             # A DeepSeek session belongs to the credentials that created it.
             # Reject mismatches (including legacy entries without a binding)
             # instead of submitting account A's session with account B.
@@ -714,6 +733,9 @@ class AcquiredAccount:
         thinking_enabled: bool = False,
         search_enabled: bool = False,
     ) -> str:
+        if self._provider == PROVIDER_MIMO:
+            self._session_id = self.adapter.create_session()
+            return self._session_id
         if self._provider == PROVIDER_ZAI:
             # z.ai stores chats server-side. Create one before completion and
             # reuse its generated user/assistant message ids in the signed body.
@@ -840,6 +862,7 @@ class AcquiredAccount:
             PROVIDER_HUNYUAN,
             PROVIDER_WENXIN,
             PROVIDER_DOUBAO,
+            PROVIDER_MIMO,
         }:
             return full_prompt
         cached = self._cached_session
@@ -922,6 +945,23 @@ class AcquiredAccount:
         if self._released:
             return
         self._released = True
+        if self._provider == PROVIDER_MIMO:
+            try:
+                try:
+                    pool.persist_adapter_cookies(self.acct, self.adapter)
+                except Exception:
+                    log.warning("mimo_cookie_persist_failed", extra={"account_id": self.acct.id})
+                if self.acct._adapter is not self.adapter:
+                    try:
+                        self.adapter.close()
+                    except Exception:
+                        log.warning("mimo_adapter_close_failed", extra={"account_id": self.acct.id})
+            finally:
+                try:
+                    pool.release(self.acct)
+                finally:
+                    _UPSTREAM_LIMITER.release()
+            return
         if self._provider == PROVIDER_KIMI:
             pool.persist_adapter_tokens(self.acct)
         pool.release(self.acct)
@@ -937,11 +977,13 @@ def _acquire(
     # requests don't hold accounts busy.
     _UPSTREAM_LIMITER.acquire()
     try:
+        wanted = normalize_provider(provider)
+        if wanted == PROVIDER_MIMO:
+            cache_key = None
         cached = SESSION_CACHE.get(cache_key) if cache_key else None
         # Keep a cached conversation on its creating account whenever it is
         # available.  If it is busy/error, safely start a fresh conversation
         # on the next idle account rather than crossing credentials.
-        wanted = normalize_provider(provider)
         acct = (
             pool.acquire_by_id(cached.account_id, provider=wanted)
             if cached and cached.account_id
@@ -1230,7 +1272,7 @@ async def provider_manifest(request: Request):
             "capabilities": {
                 "stream": True,
                 "thinking": True,
-                "search": SEARCH != "disabled",
+                "search": provider_for_model(name) != PROVIDER_MIMO and SEARCH != "disabled",
                 "tools": True,
                 "responses": True,
                 "vision": False,
@@ -1284,7 +1326,7 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
     # not silently start a brand-new upstream session (it used to, because the
     # key was prefixed with stream:/nonstream:).
     openai_user = _extract_openai_user(req, request)
-    cache_key = _cache_key(request, openai_user)
+    cache_key = _cache_key(request, openai_user) if provider != PROVIDER_MIMO else None
     if req.stream:
         include_usage = bool(req.stream_options and req.stream_options.include_usage)
         return await _handle_stream(proxy_id, prompt, req.tools, model_type=model_type, thinking_mode=thinking, search_enabled=search, rate_headers=rate_headers,
@@ -1337,7 +1379,7 @@ async def messages(req: AnthropicRequest, request: Request):
                 tool_names.append(t.name)
 
     anth_user = _extract_anthropic_user(req, request)
-    cache_key = _cache_key(request, anth_user)
+    cache_key = _cache_key(request, anth_user) if provider != PROVIDER_MIMO else None
     if req.stream:
         return await _anthropic_stream(proxy_id, prompt, tool_names,
                                        model_type=model_type, thinking_mode=thinking,
@@ -1426,10 +1468,12 @@ def _anthropic_nonstream(msg_id: str, prompt: str, tool_names: list[str],
         HunyuanAuthError,
         WenxinAuthError,
         DoubaoAuthError,
+        MimoAuthError,
     ) as e:
         get_stats().record(response_model, 0, success=False)
-        pool.mark_error(acq.acct, str(e))
-        raise HTTPException(status_code=401, detail=str(e))
+        message = MIMO_AUTH_MESSAGE if isinstance(e, MimoAuthError) else str(e)
+        pool.mark_error(acq.acct, message)
+        raise HTTPException(status_code=401, detail=message)
     except Exception as e:
         get_stats().record(response_model, 0, success=False)
         pool.mark_error(acq.acct, str(e))
@@ -1464,6 +1508,11 @@ async def _anthropic_stream(msg_id: str, prompt: str, tool_names: list[str],
             thinking_enabled=thinking_mode,
             search_enabled=search_enabled,
         )
+    except MimoAuthError:
+        get_stats().record(response_model, 0, success=False)
+        pool.mark_error(acq.acct, MIMO_AUTH_MESSAGE)
+        acq.release()
+        raise HTTPException(status_code=401, detail=MIMO_AUTH_MESSAGE)
     except Exception as e:
         get_stats().record(response_model, 0, success=False)
         pool.mark_error(acq.acct, str(e))
@@ -1474,16 +1523,17 @@ async def _anthropic_stream(msg_id: str, prompt: str, tool_names: list[str],
     async def event_stream():
         nonlocal t0
         ready_out: dict = {}
+        upstream_tokens = None
         try:
+            upstream_tokens = acq.adapter.chat_stream(
+                ds_id, eff, model_type=model_type,
+                thinking_enabled=thinking_mode, search_enabled=search_enabled,
+                parent_message_id=acq.parent_message_id, ready_out=ready_out,
+                upstream_model=upstream_model,
+            )
             for event in stream_response(
                 msg_id, response_model,
-                acq.adapter.chat_stream(ds_id, eff,
-                                       model_type=model_type,
-                                       thinking_enabled=thinking_mode,
-                                       search_enabled=search_enabled,
-                                       parent_message_id=acq.parent_message_id,
-                                       ready_out=ready_out,
-                                       upstream_model=upstream_model),
+                upstream_tokens,
                 tool_names,
                 thinking_mode=thinking_mode,
             ):
@@ -1493,6 +1543,13 @@ async def _anthropic_stream(msg_id: str, prompt: str, tool_names: list[str],
                                       ready_out.get("session_id"),
                                       full_prompt=prompt)
             get_stats().record(response_model, (time.time() - t0) * 1000)
+        except MimoAuthError:
+            get_stats().record(response_model, (time.time() - t0) * 1000, success=False)
+            pool.mark_error(acq.acct, MIMO_AUTH_MESSAGE)
+            error = {"type": "error", "error": {
+                "type": "authentication_error", "message": MIMO_AUTH_MESSAGE,
+            }}
+            yield f"event: error\ndata: {json.dumps(error, ensure_ascii=False)}\n\n"
         except Exception as e:
             get_stats().record(response_model, (time.time() - t0) * 1000, success=False)
             if isinstance(e, (RateLimitError, UpstreamEmptyError, UpstreamTransientError)):
@@ -1502,11 +1559,17 @@ async def _anthropic_stream(msg_id: str, prompt: str, tool_names: list[str],
                 pool.mark_error(acq.acct, str(e))
             raise
         finally:
+            if provider == PROVIDER_MIMO and upstream_tokens is not None:
+                try:
+                    upstream_tokens.close()
+                except Exception:
+                    log.warning("mimo_stream_close_failed", extra={"account_id": acq.acct.id})
             acq.release()
 
     return StreamingResponse(
         event_stream(),
         media_type="text/event-stream",
+        background=BackgroundTask(acq.release) if provider == PROVIDER_MIMO else None,
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
@@ -1590,10 +1653,12 @@ def _handle_nonstream(proxy_id: str, prompt: str, tools: list[ToolDef] | None = 
         HunyuanAuthError,
         WenxinAuthError,
         DoubaoAuthError,
+        MimoAuthError,
     ) as e:
         get_stats().record(response_model, 0, success=False)
-        pool.mark_error(acq.acct, str(e))
-        raise HTTPException(status_code=401, detail=str(e))
+        message = MIMO_AUTH_MESSAGE if isinstance(e, MimoAuthError) else str(e)
+        pool.mark_error(acq.acct, message)
+        raise HTTPException(status_code=401, detail=message)
     except Exception as e:
         get_stats().record(response_model, 0, success=False)
         pool.mark_error(acq.acct, str(e))
@@ -1689,7 +1754,7 @@ async def responses(req: ResponsesRequest, request: Request):
         conversation_id = f"header:{conversation_id}"
     else:
         conversation_id = SessionCache.derive_conversation_id(req.user, None)
-    cache_key = _cache_key(request, conversation_id)
+    cache_key = _cache_key(request, conversation_id) if provider != PROVIDER_MIMO else None
     response_id = f"resp_{uuid.uuid4().hex}"
     request_data = req.model_dump()
 
@@ -1726,7 +1791,16 @@ async def responses(req: ResponsesRequest, request: Request):
     )
     translator = ResponsesStreamTranslator(response_id, public_model, request_data)
 
-    async def event_stream():
+    def upstream_error_event(error: dict) -> str:
+        message = str(error.get("message") or "Upstream error")
+        code = str(error.get("code") or "")
+        if code:
+            return translator._event(
+                "error", {"code": code, "message": message, "param": None}
+            )
+        return translator.error_event(message)
+
+    async def translated_events():
         for event in translator.initial_events():
             yield event
 
@@ -1748,9 +1822,7 @@ async def responses(req: ResponsesRequest, request: Request):
                         continue
                     if isinstance(chunk.get("error"), dict):
                         failed = True
-                        yield translator.error_event(
-                            str(chunk["error"].get("message") or "Upstream error")
-                        )
+                        yield upstream_error_event(chunk["error"])
                         continue
                     for event in translator.feed_chat_chunk(chunk):
                         yield event
@@ -1765,9 +1837,7 @@ async def responses(req: ResponsesRequest, request: Request):
                         continue
                     if isinstance(chunk.get("error"), dict):
                         failed = True
-                        yield translator.error_event(
-                            str(chunk["error"].get("message") or "Upstream error")
-                        )
+                        yield upstream_error_event(chunk["error"])
                     else:
                         for event in translator.feed_chat_chunk(chunk):
                             yield event
@@ -1775,6 +1845,22 @@ async def responses(req: ResponsesRequest, request: Request):
         if not failed:
             for event in translator.final_events():
                 yield event
+
+    async def event_stream():
+        events = translated_events()
+        try:
+            async for event in events:
+                yield event
+        finally:
+            if provider == PROVIDER_MIMO:
+                await events.aclose()
+                try:
+                    await chat_response.body_iterator.aclose()
+                finally:
+                    # The translated stream can be cancelled during its
+                    # initial events, before the chat generator ever starts.
+                    if chat_response.background is not None:
+                        await chat_response.background()
 
     return StreamingResponse(
         event_stream(),
@@ -1808,6 +1894,11 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
             thinking_enabled=thinking_mode,
             search_enabled=search_enabled,
         )
+    except MimoAuthError:
+        get_stats().record(response_model, 0, success=False, prompt_tokens=prompt_tokens)
+        pool.mark_error(acq.acct, MIMO_AUTH_MESSAGE)
+        acq.release()
+        raise HTTPException(status_code=401, detail=MIMO_AUTH_MESSAGE)
     except Exception as e:
         get_stats().record(response_model, 0, success=False, prompt_tokens=prompt_tokens)
         pool.mark_error(acq.acct, str(e))
@@ -1828,6 +1919,7 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
     async def event_stream():
         nonlocal t0
         completion_parts: list[str] = []
+        upstream_tokens = None
         # Multi-turn: filled by adapter with the upstream response message id
         # (and the actual session id after a retry-swap). Recorded into the
         # session cache on success so the next turn has a valid parent.
@@ -1860,13 +1952,13 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
                                           ready_out.get("session_id"),
                                           full_prompt=prompt)
 
-            for token in acq.adapter.chat_stream(ds_id, eff,
-                                                  model_type=model_type,
-                                                  thinking_enabled=thinking_mode,
-                                                  search_enabled=search_enabled,
-                                                  parent_message_id=acq.parent_message_id,
-                                                  ready_out=ready_out,
-                                                  upstream_model=upstream_model):
+            upstream_tokens = acq.adapter.chat_stream(
+                ds_id, eff, model_type=model_type,
+                thinking_enabled=thinking_mode, search_enabled=search_enabled,
+                parent_message_id=acq.parent_message_id, ready_out=ready_out,
+                upstream_model=upstream_model,
+            )
+            for token in upstream_tokens:
                 if isinstance(token, dict):
                     tt = token.get("__type")
                     if tt == "status":
@@ -1978,14 +2070,18 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
         except Exception as e:
             get_stats().record(response_model, (time.time() - t0) * 1000, success=False,
                                prompt_tokens=prompt_tokens)
+            message = MIMO_AUTH_MESSAGE if isinstance(e, MimoAuthError) else str(e)
             # Rate limit / transient empty responses are not credential
             # failures — keep the account usable instead of draining the pool.
             if isinstance(e, (RateLimitError, UpstreamEmptyError, UpstreamTransientError)):
                 if cache_key:
                     SESSION_CACHE.invalidate(cache_key)
             else:
-                pool.mark_error(acq.acct, str(e))
-            log.exception("openai_stream_failed")
+                pool.mark_error(acq.acct, message)
+            if isinstance(e, MimoAuthError):
+                log.warning("upstream_auth_failed", extra={"provider": provider})
+            else:
+                log.exception("openai_stream_failed")
             # Emit a uniform error frame to the client, then [DONE] so the
             # client SDK doesn't see a truncated stream.
             if isinstance(e, RateLimitError):
@@ -1999,6 +2095,7 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
                     HunyuanAuthError,
                     WenxinAuthError,
                     DoubaoAuthError,
+                    MimoAuthError,
                 ),
             ):
                 err_type, err_code, retry_after = "authentication_error", "invalid_api_key", None
@@ -2021,7 +2118,7 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
                 "error": {
                     "type": err_type,
                     "code": err_code,
-                    "message": str(e)[:500],
+                    "message": message[:500],
                 },
             }
             if retry_after:
@@ -2029,11 +2126,17 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
             yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"
         finally:
+            if provider == PROVIDER_MIMO and upstream_tokens is not None:
+                try:
+                    upstream_tokens.close()
+                except Exception:
+                    log.warning("mimo_stream_close_failed", extra={"account_id": acq.acct.id})
             acq.release()
 
     return StreamingResponse(
         event_stream(),
         media_type="text/event-stream",
+        background=BackgroundTask(acq.release) if provider == PROVIDER_MIMO else None,
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",

@@ -7,6 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { post, put, get, ApiCallError } from '@/lib/api'
 import { toast } from '@/hooks/use-toast'
 import type { Account, ProxiesResponse, ProxyConfig } from '@/lib/types'
+import { ACCOUNT_PROVIDERS, MIMO_REQUIRED_COOKIES, parseMimoCookies } from '@/lib/providers'
 
 interface Props {
   /** When set, the form is in "edit" mode. */
@@ -42,6 +43,8 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
   const [proxyId, setProxyId] = useState(account?.proxy_id ?? '')
   const [proxies, setProxies] = useState<ProxyConfig[]>([])
   const [busy, setBusy] = useState(false)
+  const isMimo = provider === 'mimo'
+  const mimoCookies = parseMimoCookies(isMimo ? cookies : '')
 
   useEffect(() => {
     let cancelled = false
@@ -61,13 +64,35 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
 
   const handleSave = async () => {
     if (busy) return
-    const effectiveUserId = userId.trim() || zaiUserIdFromToken(token)
+    const effectiveUserId = isMimo
+      ? mimoCookies.userId
+      : userId.trim() || zaiUserIdFromToken(token)
     const isKimi = provider === 'kimi'
     const isQwen = provider === 'qianwen'
     const isHunyuan = provider === 'hunyuan'
     const isWenxin = provider === 'wenxin'
     const isDoubao = provider === 'doubao'
     const effectiveRefreshToken = refreshToken.trim()
+    if (
+      isMimo
+      && !mimoCookies.cookies
+      && !(isEdit && account?.provider === 'mimo' && account.cookies_preview)
+    ) {
+      toast({
+        title: '小米 MiMo 账号需要完整 Cookie',
+        description: `必须包含 ${MIMO_REQUIRED_COOKIES.join('、')}`,
+        variant: 'destructive',
+      })
+      return
+    }
+    if (isMimo && mimoCookies.cookies && mimoCookies.missing.length > 0) {
+      toast({
+        title: '小米 MiMo Cookie 不完整',
+        description: `缺少或为空：${mimoCookies.missing.join('、')}`,
+        variant: 'destructive',
+      })
+      return
+    }
     if (provider === 'zai' && !effectiveUserId && !(isEdit && account?.has_user_id)) {
       toast({ title: 'z.ai 账号需要 User ID', variant: 'destructive' })
       return
@@ -120,6 +145,21 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
       toast({ title: 'Kimi 账号需要 Refresh Token', variant: 'destructive' })
       return
     }
+    const credentials: Record<string, string> = isMimo
+      ? {
+          cookies: mimoCookies.cookies,
+          user_id: effectiveUserId,
+        }
+      : {
+          token,
+          cookies,
+          device_id: deviceId,
+          user_id: effectiveUserId,
+          refresh_token: effectiveRefreshToken,
+          xsrf_token: xsrfToken,
+          session_id: sessionId,
+          topic_id: topicId,
+        }
     setBusy(true)
     try {
       if (isEdit && account) {
@@ -128,14 +168,9 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
           proxy_id: proxyId,
           provider,
         }
-        if (token) body.token = token
-        if (cookies) body.cookies = cookies
-        if (deviceId) body.device_id = deviceId
-        if (effectiveUserId) body.user_id = effectiveUserId
-        if (effectiveRefreshToken) body.refresh_token = effectiveRefreshToken
-        if (xsrfToken) body.xsrf_token = xsrfToken
-        if (sessionId) body.session_id = sessionId
-        if (topicId) body.topic_id = topicId
+        for (const [field, value] of Object.entries(credentials)) {
+          if (value) body[field] = value
+        }
         await put(`/admin/api/accounts/${encodeURIComponent(account.id)}`, body)
         toast({ title: '账号已保存', variant: 'success' })
         // Refetch the account to get the fresh data.
@@ -148,23 +183,17 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
           && provider !== 'hunyuan'
           && provider !== 'wenxin'
           && provider !== 'doubao'
+          && !isMimo
         ) {
           toast({ title: 'Token 不能为空', variant: 'destructive' })
           setBusy(false)
           return
         }
         const res = await post<{ ok: boolean; account: Account }>('/admin/api/accounts', {
-          token,
-          cookies,
           email: email || '',
           proxy_id: proxyId,
-          device_id: deviceId,
           provider,
-          user_id: effectiveUserId,
-          refresh_token: effectiveRefreshToken,
-          xsrf_token: xsrfToken,
-          session_id: sessionId,
-          topic_id: topicId,
+          ...credentials,
         })
         toast({ title: '账号添加成功', variant: 'success' })
         onSaved(res.account)
@@ -197,13 +226,9 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="deepseek">DeepSeek</SelectItem>
-            <SelectItem value="zai">z.ai</SelectItem>
-            <SelectItem value="kimi">Kimi</SelectItem>
-            <SelectItem value="qianwen">千问</SelectItem>
-            <SelectItem value="hunyuan">混元</SelectItem>
-            <SelectItem value="wenxin">文心</SelectItem>
-            <SelectItem value="doubao">豆包</SelectItem>
+            {ACCOUNT_PROVIDERS.map(({ id, label }) => (
+              <SelectItem key={id} value={id}>{label}</SelectItem>
+            ))}
           </SelectContent>
         </Select>
       </div>
@@ -235,6 +260,22 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
           <p className="text-[11px] text-muted-foreground">
             Z.ai 的 X-Signature 签名需要该 User ID；留空时会尝试解析 token JWT。
           </p>
+        </div>
+      )}
+      {isMimo && (
+        <div className="space-y-1.5">
+          <Label htmlFor="acct-mimo-user-id">MiMo User ID（自动提取）</Label>
+          <Input
+            id="acct-mimo-user-id"
+            value={mimoCookies.userId}
+            readOnly
+            placeholder={
+              isEdit && account?.provider === 'mimo' && account.user_id_preview
+                ? `留空保持不变（当前 ${account.user_id_preview}）`
+                : '从 Cookie 的 userId 提取，无需单独填写'
+            }
+            className="font-mono text-xs"
+          />
         </div>
       )}
       {provider === 'kimi' && (
@@ -303,7 +344,16 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
           <code className="font-mono">hunyuan_token</code>；Token 可留空，由服务端从 Cookie 提取。
         </div>
       )}
-      {provider !== 'hunyuan' && provider !== 'wenxin' && provider !== 'doubao' && (
+      {isMimo && (
+        <div className="rounded-md border border-primary/20 bg-primary/5 p-3 text-xs leading-relaxed text-muted-foreground">
+          小米 MiMo 使用 Cookie-only 认证，完整 Cookie 必须包含{' '}
+          <code className="font-mono">{MIMO_REQUIRED_COOKIES.join('、')}</code>。
+          Cookie 值中的双引号会保留；无需填写 Token、Device ID、Session ID 或 Shield。
+          也可在「小米 MiMo 导入」中粘贴完整 Cookie 或 HAR。
+          保活只验证登录态并回写轮换 Cookie；Cookie 过期后需重新登录并导入。
+        </div>
+      )}
+      {provider !== 'hunyuan' && provider !== 'wenxin' && provider !== 'doubao' && !isMimo && (
         <div className="space-y-1.5">
           <Label htmlFor="acct-token">Token</Label>
           <Input
@@ -322,29 +372,37 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
           id="acct-cookies"
           value={cookies}
           onChange={(e) => setCookies(e.target.value)}
-          placeholder={isEdit ? '留空则不修改 Cookies' : 'cf_clearance=...; session=...'}
-          autoComplete="off"
-          className="font-mono text-xs"
-        />
-      </div>
-      <div className="space-y-1.5">
-        <Label htmlFor="acct-device-id">Device ID（可选）</Label>
-        <Input
-          id="acct-device-id"
-          value={deviceId}
-          onChange={(e) => setDeviceId(e.target.value)}
           placeholder={
             isEdit
-              ? `留空则不修改${account?.device_id_preview ? `（当前 ${account.device_id_preview}）` : ''}`
-              : '登录浏览器的 x-device-id'
+              ? '留空则不修改 Cookies'
+              : isMimo
+                ? 'userId=...; xiaomichatbot_serviceToken="..."; xiaomichatbot_ph="..."'
+                : 'cf_clearance=...; session=...'
           }
           autoComplete="off"
           className="font-mono text-xs"
         />
-        <p className="text-[11px] text-muted-foreground">
-          登录 token 与浏览器设备绑定。通过 HAR / 浏览器导出导入时会自动带上。
-        </p>
       </div>
+      {!isMimo && (
+        <div className="space-y-1.5">
+          <Label htmlFor="acct-device-id">Device ID（可选）</Label>
+          <Input
+            id="acct-device-id"
+            value={deviceId}
+            onChange={(e) => setDeviceId(e.target.value)}
+            placeholder={
+              isEdit
+                ? `留空则不修改${account?.device_id_preview ? `（当前 ${account.device_id_preview}）` : ''}`
+                : '登录浏览器的 x-device-id'
+            }
+            autoComplete="off"
+            className="font-mono text-xs"
+          />
+          <p className="text-[11px] text-muted-foreground">
+            登录 token 与浏览器设备绑定。通过 HAR / 浏览器导出导入时会自动带上。
+          </p>
+        </div>
+      )}
       <div className="space-y-1.5">
         <Label>出口代理</Label>
         <Select value={proxyId || '__none__'} onValueChange={(value) => setProxyId(value === '__none__' ? '' : value)}>

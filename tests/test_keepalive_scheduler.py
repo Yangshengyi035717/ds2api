@@ -211,3 +211,92 @@ def test_scheduler_isolates_one_crashing_job(store, monkeypatch):
 
     assert store.get_job("deepseek-1")["state"] == "cooldown"
     assert store.get_job("zai-1")["state"] == STATE_ACTIVE
+
+
+@pytest.mark.parametrize(
+    ("provider", "adapter_module", "adapter_name", "auth_error_name"),
+    [
+        ("qianwen", "qwen_adapter", "QwenAdapter", "QwenAuthError"),
+        ("hunyuan", "hunyuan_adapter", "HunyuanAdapter", "HunyuanAuthError"),
+        ("wenxin", "wenxin_adapter", "WenxinAdapter", "WenxinAuthError"),
+        ("doubao", "doubao_adapter", "DoubaoAdapter", "DoubaoAuthError"),
+    ],
+)
+@pytest.mark.parametrize("expired", [False, True])
+def test_scheduler_validates_cookie_accounts_without_token(
+    store, monkeypatch, provider, adapter_module, adapter_name, auth_error_name, expired
+):
+    from importlib import import_module
+
+    module = import_module(adapter_module)
+    account = SimpleNamespace(
+        id=f"{provider}-cookie",
+        provider=provider,
+        token="",
+        refresh_token="",
+        cookies="sessionid=test; BDUSS=test",
+        device_id="browser-device",
+        user_id="browser-user",
+        xsrf_token="",
+        session_id="",
+        topic_id="",
+        proxy="http://account-proxy:8080",
+        proxy_id="",
+        state="error",
+        error_count=1,
+        last_error="no token",
+    )
+    checked = []
+
+    class FakeAdapter:
+        def __init__(self, **kwargs):
+            self.credentials = kwargs
+
+        def check_health(self):
+            checked.append(self.credentials)
+            if expired:
+                raise getattr(module, auth_error_name)("expired login cookie")
+
+    monkeypatch.setattr(module, adapter_name, FakeAdapter)
+    pool = _FakePool()
+    pool.accounts = {account.id: account}
+    scheduler = KeepaliveScheduler(pool, store=store)
+    try:
+        assert scheduler.tick_once() == 1
+    finally:
+        scheduler.stop()
+
+    assert len(checked) == 1
+    assert checked[0]["cookies"] == account.cookies
+    assert checked[0]["device_id"] == account.device_id
+    assert checked[0]["proxy"] == account.proxy
+    job = store.get_job(account.id)
+    if expired:
+        assert job["state"] == STATE_RELOGIN_REQUIRED
+        assert job["last_error"] == "expired login cookie"
+        assert pool.invalid == [account.id]
+        assert pool.recovered == []
+        assert account.state == "error"
+    else:
+        assert job["state"] == STATE_ACTIVE
+        assert job["last_status"] == 200
+        assert job["last_error"] == ""
+        assert pool.invalid == []
+        assert pool.recovered == [account.id]
+        assert account.state == "idle"
+
+
+@pytest.mark.parametrize("provider", ["deepseek", "zai", "kimi"])
+def test_scheduler_still_requires_token_for_bearer_accounts(store, provider):
+    pool = _FakePool()
+    account = pool.accounts["deepseek-1"]
+    account.provider = provider
+    account.token = ""
+    scheduler = KeepaliveScheduler(pool, store=store)
+    try:
+        result, *_ = scheduler._probe(account, provider)
+    finally:
+        scheduler.stop()
+
+    assert result.valid is False
+    assert result.message == "no token"

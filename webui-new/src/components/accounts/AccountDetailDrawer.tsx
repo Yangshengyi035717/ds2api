@@ -13,6 +13,7 @@ import { ReloginButton } from './ReloginButton'
 import { toast } from '@/hooks/use-toast'
 import { formatUptime, truncateMiddle } from '@/lib/utils'
 import type { Account } from '@/lib/types'
+import { getProviderLabel } from '@/lib/providers'
 
 /** Format a unix-seconds timestamp as "YYYY-MM-DD HH:mm:ss" in local time. */
 function fmtTs(t: number): string {
@@ -54,22 +55,28 @@ export function AccountDetailDrawer({ account, onClose, onRelogin }: Props) {
                 <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">身份</h3>
                 <DetailRow label="ID" value={account.id} mono copyable />
                 <DetailRow label="标识" value={account.email || '—'} />
-                <DetailRow label="账号类型" value={account.provider_label || account.provider} />
+                <DetailRow label="账号类型" value={account.provider_label || getProviderLabel(account.provider)} />
                 <DetailRow label="来源" value="data/accounts.json" />
-                <DetailRow
-                  label="Device ID"
-                  value={account.has_device_id ? account.device_id_preview : '未绑定'}
-                />
+                {account.provider !== 'mimo' && (
+                  <DetailRow
+                    label="Device ID"
+                    value={account.has_device_id ? account.device_id_preview : '未绑定'}
+                  />
+                )}
                 <DetailRow
                   label="User ID"
                   value={account.has_user_id ? account.user_id_preview : '—'}
                 />
-                <DetailRow
-                  label="Refresh Token"
-                  value={account.has_refresh_token ? account.refresh_token_preview : '—'}
-                />
-                <DetailRow label="Session ID" value={account.session_id || '—'} />
-                <DetailRow label="Topic ID" value={account.topic_id || '—'} />
+                {account.provider !== 'mimo' && (
+                  <>
+                    <DetailRow
+                      label="Refresh Token"
+                      value={account.has_refresh_token ? account.refresh_token_preview : '—'}
+                    />
+                    <DetailRow label="Session ID" value={account.session_id || '—'} />
+                    <DetailRow label="Topic ID" value={account.topic_id || '—'} />
+                  </>
+                )}
                 <DetailRow label="状态" value={account.state} />
                 <DetailRow
                   label="出口代理"
@@ -85,7 +92,11 @@ export function AccountDetailDrawer({ account, onClose, onRelogin }: Props) {
 
               <section>
                 <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">凭据</h3>
-                <DetailRow label="Token 预览" value={account.token_preview || '—'} mono copyable />
+                {account.provider === 'mimo' ? (
+                  <DetailRow label="认证" value="Cookie-only" />
+                ) : (
+                  <DetailRow label="Token 预览" value={account.token_preview || '—'} mono copyable />
+                )}
                 <DetailRow
                   label="Cookies 预览"
                   value={account.cookies_preview || '—'}
@@ -96,6 +107,11 @@ export function AccountDetailDrawer({ account, onClose, onRelogin }: Props) {
                   mono
                   copyable
                 />
+                {account.provider === 'mimo' && (
+                  <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+                    保活只验证登录态并回写轮换 Cookie；Cookie 过期后需重新登录并导入。
+                  </p>
+                )}
               </section>
 
               <Separator />

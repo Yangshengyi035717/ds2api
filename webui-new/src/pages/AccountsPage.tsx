@@ -30,6 +30,7 @@ import { AccountTable } from '@/components/accounts/AccountTable'
 import { AccountDetailDrawer } from '@/components/accounts/AccountDetailDrawer'
 import { KeepalivePanel } from '@/components/accounts/KeepalivePanel'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { ACCOUNT_PROVIDERS, type AccountProviderFilter } from '@/lib/providers'
 import type {
   Account,
   AccountsResponse,
@@ -50,23 +51,18 @@ export default function AccountsPage() {
   const [editing, setEditing] = useState<Account | null>(null)
   const [viewing, setViewing] = useState<Account | null>(null)
   const [deleting, setDeleting] = useState<Account | null>(null)
-  const [providerFilter, setProviderFilter] = useState<'all' | 'deepseek' | 'zai' | 'kimi' | 'qianwen' | 'hunyuan' | 'wenxin' | 'doubao'>('all')
+  const [providerFilter, setProviderFilter] = useState<AccountProviderFilter>('all')
   const [keepaliveBusy, setKeepaliveBusy] = useState(false)
 
   const allAccounts = data?.accounts ?? []
   const accounts = providerFilter === 'all'
     ? allAccounts
     : allAccounts.filter((account) => account.provider === providerFilter)
-  const providerCounts = {
-    all: allAccounts.length,
-    deepseek: allAccounts.filter((account) => account.provider === 'deepseek').length,
-    zai: allAccounts.filter((account) => account.provider === 'zai').length,
-    kimi: allAccounts.filter((account) => account.provider === 'kimi').length,
-    qianwen: allAccounts.filter((account) => account.provider === 'qianwen').length,
-    hunyuan: allAccounts.filter((account) => account.provider === 'hunyuan').length,
-    wenxin: allAccounts.filter((account) => account.provider === 'wenxin').length,
-    doubao: allAccounts.filter((account) => account.provider === 'doubao').length,
-  }
+  const providerCounts = ACCOUNT_PROVIDERS.map(({ id, label }) => ({
+    id,
+    label,
+    count: allAccounts.filter((account) => account.provider === id).length,
+  }))
   const keepaliveJobs = Object.fromEntries(
     (keepaliveData?.jobs ?? []).map((job) => [job.account_id, job]),
   )
@@ -139,7 +135,7 @@ export default function AccountsPage() {
     <div className="space-y-6 animate-fade-in">
       <PageHeader
         title="账号池"
-        description={`按提供商管理账号 · DeepSeek ${providerCounts.deepseek} · z.ai ${providerCounts.zai} · Kimi ${providerCounts.kimi} · 千问 ${providerCounts.qianwen} · 混元 ${providerCounts.hunyuan} · 文心 ${providerCounts.wenxin} · 豆包 ${providerCounts.doubao}`}
+        description={`按提供商管理账号 · ${providerCounts.map(({ label, count }) => `${label} ${count}`).join(' · ')}`}
         actions={
           <>
             <Button variant="outline" onClick={refresh} disabled={loading}>
@@ -156,17 +152,13 @@ export default function AccountsPage() {
 
       <Tabs
         value={providerFilter}
-        onValueChange={(value) => setProviderFilter(value as 'all' | 'deepseek' | 'zai' | 'kimi' | 'qianwen' | 'hunyuan' | 'wenxin' | 'doubao')}
+        onValueChange={(value) => setProviderFilter(value as AccountProviderFilter)}
       >
-        <TabsList className="grid w-full grid-cols-8">
-          <TabsTrigger value="all">全部 {providerCounts.all}</TabsTrigger>
-          <TabsTrigger value="deepseek">DeepSeek {providerCounts.deepseek}</TabsTrigger>
-          <TabsTrigger value="zai">z.ai {providerCounts.zai}</TabsTrigger>
-          <TabsTrigger value="kimi">Kimi {providerCounts.kimi}</TabsTrigger>
-          <TabsTrigger value="qianwen">千问 {providerCounts.qianwen}</TabsTrigger>
-          <TabsTrigger value="hunyuan">混元 {providerCounts.hunyuan}</TabsTrigger>
-          <TabsTrigger value="wenxin">文心 {providerCounts.wenxin}</TabsTrigger>
-          <TabsTrigger value="doubao">豆包 {providerCounts.doubao}</TabsTrigger>
+        <TabsList className="flex h-auto w-full flex-wrap justify-start gap-1">
+          <TabsTrigger value="all">全部 {allAccounts.length}</TabsTrigger>
+          {providerCounts.map(({ id, label, count }) => (
+            <TabsTrigger key={id} value={id}>{label} {count}</TabsTrigger>
+          ))}
         </TabsList>
       </Tabs>
 
@@ -217,17 +209,18 @@ export default function AccountsPage() {
           <DialogHeader>
             <DialogTitle>添加账号</DialogTitle>
             <DialogDescription>
-              从已登录浏览器导入凭据，或手动填写 Token、Cookies 与账号专属字段
+              从已登录浏览器导入凭据，或手动填写对应账号的认证字段；小米 MiMo 只需 Cookie
             </DialogDescription>
           </DialogHeader>
           <Tabs defaultValue="import">
-            <TabsList className="grid w-full grid-cols-7">
+            <TabsList className="flex h-auto w-full flex-wrap justify-start gap-1">
               <TabsTrigger value="import">DeepSeek 导入</TabsTrigger>
               <TabsTrigger value="zai">z.ai 导入</TabsTrigger>
               <TabsTrigger value="kimi">Kimi 导入</TabsTrigger>
               <TabsTrigger value="hunyuan">混元导入</TabsTrigger>
               <TabsTrigger value="wenxin">文心导入</TabsTrigger>
               <TabsTrigger value="doubao">豆包导入</TabsTrigger>
+              <TabsTrigger value="mimo">小米 MiMo 导入</TabsTrigger>
               <TabsTrigger value="manual">手动添加</TabsTrigger>
             </TabsList>
             <TabsContent value="import">
@@ -290,6 +283,15 @@ export default function AccountsPage() {
                   refreshAll()
                 }}
                 onCancel={() => setAddOpen(false)}
+              />
+            </TabsContent>
+            <TabsContent value="mimo">
+              <CredentialImportPanel
+                provider="mimo"
+                onImported={() => {
+                  setAddOpen(false)
+                  refreshAll()
+                }}
               />
             </TabsContent>
           </Tabs>

@@ -4,6 +4,19 @@
 
 ## 当前账号配置规则
 
+- 新增 `provider=mimo`（小米 MiMo Studio），公开模型为 `mimo-v2.6-pro` 和
+  `mimo-v2.6-flash`。账号、代理、导入、保活、API 文档和 Playground 均按 provider 隔离接入。
+- MiMo 使用 Cookie 认证：必须包含 `userId`、`xiaomichatbot_serviceToken`、
+  `xiaomichatbot_ph`，不要求 Bearer Token。Cookie 的引号可去除，`+`、`/`、`=`
+  必须保留；`ph` 通过 query 编码发送，不能使用表单解码破坏 `+`。
+- MiMo 每轮创建并保存新的会话后发送完整 prompt，不复用 DeepSeek parent/delta 链。
+  SSE 只把 `message.content` 输出为正文，`reasoningContent` 输出为推理；
+  `dialogId`、`usage` 和 `finish.content=[DONE]` 不能作为正文。
+- MiMo 保活调用只读 `POST /open-apis/chat/conversation/list`，仅验证登录和保存实际轮换的
+  Cookie；尚未证明独立刷新 serviceToken 的协议，不宣称可无限续期。
+  脱敏 HAR 可能没有 Cookie，需提示补充，不能用抓包中的会话 ID 或匿名状态当成功。
+- 完整证据、复现和文本接入边界见 [docs/mimo-provider.md](docs/mimo-provider.md)。
+
 - WebUI「添加账号」支持 **DeepSeek 浏览器导入**、**z.ai 浏览器导出导入** 与 **手动填写**。导入接口为 `POST /admin/api/accounts/import`，响应只返回脱敏摘要。
 - 账号按 `provider` 分为 `deepseek` / `zai`。DeepSeek 账号至少需要 `token`；z.ai 账号还需要签名所用的 `user_id`，建议同时保存 `device_id` 与 Cookie。
 - z.ai 使用从已登录 `zchat.z.ai` 页面导出的 `{provider:"zai",token,user_id,device_id,cookies}`；`user_id` 由同源 `GET /api/v1/auths/` 获取，`device_id` 来自 `localStorage._arms_uid`。

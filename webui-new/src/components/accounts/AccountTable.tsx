@@ -13,6 +13,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { StateBadge } from './StateBadge'
 import { ReloginButton } from './ReloginButton'
 import { truncateMiddle } from '@/lib/utils'
+import { getProviderLabel } from '@/lib/providers'
 import type { Account, KeepaliveJob } from '@/lib/types'
 import { Switch } from '@/components/ui/switch'
 
@@ -81,13 +82,14 @@ export function AccountTable({
                           a.provider === 'qianwen' ||
                           a.provider === 'hunyuan' ||
                           a.provider === 'wenxin' ||
-                          a.provider === 'doubao'
+                          a.provider === 'doubao' ||
+                          a.provider === 'mimo'
                             ? 'outline'
                             : 'secondary'
                         }
                         className="mt-1 text-[10px]"
                       >
-                        {a.provider_label || a.provider}
+                        {a.provider_label || getProviderLabel(a.provider)}
                       </Badge>
                     </div>
                   </TooltipTrigger>
@@ -169,7 +171,7 @@ export function AccountTable({
               </TableCell>
               <TableCell className="hidden 2xl:table-cell">
                 <span className="font-mono text-xs text-muted-foreground">
-                  {a.token_preview || '—'}
+                  {a.provider === 'mimo' ? 'Cookie-only' : a.token_preview || '—'}
                 </span>
               </TableCell>
               <TableCell className="hidden 2xl:table-cell">

@@ -13,6 +13,7 @@ from provider_registry import (
     PROVIDER_DOUBAO,
     PROVIDER_HUNYUAN,
     PROVIDER_KIMI,
+    PROVIDER_MIMO,
     PROVIDER_QWEN,
     PROVIDER_WENXIN,
     PROVIDER_ZAI,
@@ -74,6 +75,9 @@ class KeepaliveJobStore:
         self.doubao_interval = _clamp_interval(
             _env_int("KEEPALIVE_DOUBAO_INTERVAL", 15 * 60)
         )
+        self.mimo_interval = _clamp_interval(
+            _env_int("KEEPALIVE_MIMO_INTERVAL", 15 * 60)
+        )
         self.startup_jitter = max(0, _env_int("KEEPALIVE_STARTUP_JITTER", 60))
         self.lease_secs = max(30, _env_int("KEEPALIVE_LEASE_SECS", 120))
         self._initialize()
@@ -130,6 +134,8 @@ class KeepaliveJobStore:
             return self.wenxin_interval
         if normalized == PROVIDER_DOUBAO:
             return self.doubao_interval
+        if normalized == PROVIDER_MIMO:
+            return self.mimo_interval
         return self.deepseek_interval
 
     def sync_accounts(

@@ -22,6 +22,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 
 class CredentialImportError(ValueError):
@@ -70,6 +71,8 @@ _UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
     re.IGNORECASE,
 )
+_MIMO_HOST = "aistudio.xiaomimimo.com"
+_MIMO_COOKIE_NAMES = ("userId", "xiaomichatbot_serviceToken", "xiaomichatbot_ph")
 
 
 def parse_credential_payload(payload: str | dict | list) -> ImportedCredentials:
@@ -78,6 +81,8 @@ def parse_credential_payload(payload: str | dict | list) -> ImportedCredentials:
         text = payload.strip()
         if text.lower().startswith("cookie:"):
             text = text.split(":", 1)[1].strip()
+        if not text.startswith(("{", "[")) and _looks_like_mimo_cookies(text):
+            return _from_mimo_cookies(text, source="mimo-cookie")
         if "hunyuan_token=" in text and "hunyuan_user=" in text:
             return _from_hunyuan_cookie_string(text)
         if "BDUSS=" in text:
@@ -160,6 +165,13 @@ def _from_browser_export(data: dict) -> ImportedCredentials:
         "refreshToken",
     )
     provider = _first_string(data, "provider", "account_type")
+    if str(provider).strip().lower() in {"xiaomi", "xiaomimimo", "mimo"} or (
+        not provider and _looks_like_mimo_cookies(cookies)
+    ):
+        imported = _from_mimo_cookies(cookies, source="browser-export")
+        imported.token = token
+        imported.device_id = _normalize_device_id(device_id)
+        return imported
     if str(provider).strip().lower() in {"hunyuan", "tencent", "aistudio"}:
         token = token or _cookie_value(cookies, "hunyuan_token")
         user_id = user_id or _cookie_value(cookies, "hunyuan_user")
@@ -192,6 +204,12 @@ def _from_browser_export(data: dict) -> ImportedCredentials:
 
 def _from_har(har: dict) -> ImportedCredentials:
     entries = har["log"]["entries"]
+    if any(
+        isinstance(entry, dict)
+        and _is_mimo_url(str((entry.get("request") or {}).get("url") or ""))
+        for entry in entries
+    ):
+        return _from_mimo_har(entries)
     if any(
         isinstance(entry, dict)
         and (
@@ -278,6 +296,95 @@ def _from_har(har: dict) -> ImportedCredentials:
         source=f"har:{token_source}",
         warnings=warnings,
     )
+
+
+def _looks_like_mimo_cookies(cookies: str) -> bool:
+    names = {part.split("=", 1)[0].strip() for part in cookies.split(";") if "=" in part}
+    return bool(names & set(_MIMO_COOKIE_NAMES[1:]))
+
+
+def _from_mimo_cookies(cookies: str, *, source: str) -> ImportedCredentials:
+    from mimo_adapter import mimo_user_id_from_cookies, mimo_validate_cookies
+
+    normalized = _coerce_cookies(cookies)
+    try:
+        mimo_validate_cookies(normalized)
+    except ValueError:
+        if source.startswith("har:"):
+            raise CredentialImportError(
+                "HAR 中缺少 MiMo 登录 Cookie；脱敏 HAR 需要补充完整 Cookie"
+                "（userId、xiaomichatbot_serviceToken、xiaomichatbot_ph）。"
+            ) from None
+        raise CredentialImportError(
+            "MiMo Cookie 必须包含 userId、xiaomichatbot_serviceToken 和 xiaomichatbot_ph"
+        ) from None
+    return ImportedCredentials(
+        token="",
+        cookies=normalized,
+        user_id=mimo_user_id_from_cookies(normalized),
+        provider="mimo",
+        source=source,
+        warnings=["MiMo 使用登录 Cookie；Cookie 失效后需重新导入。"],
+    )
+
+
+def _is_mimo_url(url: str) -> bool:
+    try:
+        parsed = urlsplit(url)
+        return parsed.scheme in {"http", "https"} and parsed.hostname == _MIMO_HOST
+    except ValueError:
+        return False
+
+
+def _from_mimo_har(entries: list[Any]) -> ImportedCredentials:
+    from mimo_adapter import mimo_cookie_value
+
+    cookies: dict[str, str] = {}
+    device_id = ""
+    ph = ""
+    telemetry_segments = {
+        "telemetry", "analytics", "collect", "beacon", "monitor",
+        "metrics", "report", "track", "log", "logs", "event", "events",
+    }
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        request = entry.get("request") or {}
+        url = str(request.get("url") or "")
+        if not _is_mimo_url(url):
+            continue
+        parsed = urlsplit(url)
+        if set(unquote(parsed.path).lower().split("/")) & telemetry_segments:
+            continue
+        response = entry.get("response") or {}
+        headers = _header_map(request.get("headers"))
+        for item in request.get("cookies") or []:
+            if isinstance(item, dict) and item.get("name"):
+                cookies[str(item["name"])] = str(item.get("value") or "")
+        _merge_cookie_header(cookies, headers.get("cookie", ""))
+        for item in response.get("cookies") or []:
+            if isinstance(item, dict) and item.get("name"):
+                cookies[str(item["name"])] = str(item.get("value") or "")
+        for name, value in _header_pairs(response.get("headers")):
+            if name == "set-cookie":
+                _merge_set_cookie(cookies, value)
+        device_id = headers.get("x-device-id", "").strip() or device_id
+        # HAR queryString values are already decoded. Raw URL query values
+        # need percent decoding only: unquote_plus would corrupt literal '+'.
+        entry_ph = ""
+        for item in request.get("queryString") or []:
+            if isinstance(item, dict) and item.get("name") in {"ph", "xiaomichatbot_ph"}:
+                entry_ph = str(item.get("value") or "")
+        for part in parsed.query.split("&"):
+            name, separator, value = part.partition("=")
+            if separator and unquote(name) in {"ph", "xiaomichatbot_ph"}:
+                entry_ph = unquote(value)
+        ph = entry_ph or ph
+    if ph and not mimo_cookie_value(_serialize_cookies(cookies), "xiaomichatbot_ph"):
+        cookies["xiaomichatbot_ph"] = ph
+    imported = _from_mimo_cookies(_serialize_cookies(cookies), source="har:mimo-cookie")
+    imported.device_id = _normalize_device_id(device_id)
+    return imported
 
 
 def _from_hunyuan_cookie_string(cookies: str) -> ImportedCredentials:

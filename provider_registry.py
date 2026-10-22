@@ -10,6 +10,7 @@ PROVIDER_QWEN = "qianwen"
 PROVIDER_HUNYUAN = "hunyuan"
 PROVIDER_WENXIN = "wenxin"
 PROVIDER_DOUBAO = "doubao"
+PROVIDER_MIMO = "mimo"
 SUPPORTED_PROVIDERS = (
     PROVIDER_DEEPSEEK,
     PROVIDER_ZAI,
@@ -18,6 +19,7 @@ SUPPORTED_PROVIDERS = (
     PROVIDER_HUNYUAN,
     PROVIDER_WENXIN,
     PROVIDER_DOUBAO,
+    PROVIDER_MIMO,
 )
 
 PROVIDER_LABELS = {
@@ -28,6 +30,7 @@ PROVIDER_LABELS = {
     PROVIDER_HUNYUAN: "混元",
     PROVIDER_WENXIN: "文心",
     PROVIDER_DOUBAO: "豆包",
+    PROVIDER_MIMO: "小米 MiMo",
 }
 
 _PROVIDER_ALIASES = {
@@ -55,6 +58,9 @@ _PROVIDER_ALIASES = {
     "byte-dance": PROVIDER_DOUBAO,
     "bytedance": PROVIDER_DOUBAO,
     "豆包": PROVIDER_DOUBAO,
+    "xiaomi": PROVIDER_MIMO,
+    "xiaomimimo": PROVIDER_MIMO,
+    "mimo": PROVIDER_MIMO,
 }
 
 _ZAI_MODEL_ALIASES = {
@@ -142,6 +148,14 @@ def provider_for_model(model: str | None) -> str:
         or name == doubao_model_name().lower()
     ):
         return PROVIDER_DOUBAO
+    if (
+        name.startswith("mimo-")
+        or name in {"xiaomi", "xiaomimimo", "mimo"}
+        or name == mimo_model_name().lower()
+        or name == mimo_upstream_model_name().lower()
+        or name in {item.lower() for item in available_mimo_models()}
+    ):
+        return PROVIDER_MIMO
     return PROVIDER_DEEPSEEK
 
 
@@ -327,6 +341,35 @@ def doubao_upstream_model(model: str | None) -> str:
 
 def available_doubao_models() -> list[str]:
     return [doubao_model_name()]
+
+
+def mimo_model_name() -> str:
+    return os.environ.get("MIMO_MODEL_NAME", "mimo-v2.6-pro").strip() or "mimo-v2.6-pro"
+
+
+def mimo_upstream_model_name() -> str:
+    return os.environ.get("MIMO_UPSTREAM_MODEL", "mimo-v2.6-pro").strip() or "mimo-v2.6-pro"
+
+
+def mimo_public_model(model: str | None) -> str:
+    requested = str(model or "").strip()
+    if not requested or requested.lower() in {"xiaomi", "xiaomimimo", "mimo"}:
+        return mimo_model_name()
+    return requested
+
+
+def mimo_upstream_model(model: str | None) -> str:
+    requested = mimo_public_model(model)
+    aliases = {
+        "mimo-v2.6-pro": "mimo-v2.6-pro",
+        "mimo-v2.6-flash": "mimo-v2.6-flash",
+        mimo_model_name().lower(): mimo_upstream_model_name(),
+    }
+    return aliases.get(requested.lower(), requested)
+
+
+def available_mimo_models() -> list[str]:
+    return list(dict.fromkeys([mimo_model_name(), "mimo-v2.6-flash"]))
 
 
 def available_models(deepseek_model: str) -> list[str]:
