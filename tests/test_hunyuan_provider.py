@@ -47,7 +47,7 @@ def test_hunyuan_model_routing_and_cookie_identity():
     assert adapter.token == "token-456"
 
 
-def test_hunyuan_sse_maps_thought_and_text_channels():
+def test_hunyuan_sse_thought_is_answer_when_thinking_is_disabled():
     adapter = _adapter()
     response = _Response([
         "event: speech_type",
@@ -67,11 +67,38 @@ def test_hunyuan_sse_maps_thought_and_text_channels():
     ])
     adapter._open = lambda *_a, **_k: response
 
-    assert list(adapter.chat_stream("conversation-1", "hello")) == [
+    assert list(adapter.chat_stream("conversation-1", "hello")) == ["推理", "回答"]
+    assert response.closed is True
+
+
+def test_hunyuan_sse_thought_maps_to_reasoning_when_thinking_enabled():
+    adapter = _adapter()
+    response = _Response([
+        "event: speech_type",
+        "data: thought",
+        "",
+        'data: {"type":"text","msg":"推理"}',
+        "",
+        "event: speech_type",
+        "data: text",
+        "",
+        'data: {"type":"text","msg":"回答"}',
+        "",
+        "data: [DONE]",
+        "",
+    ])
+    adapter._open = lambda *_a, **_k: response
+
+    assert list(
+        adapter.chat_stream(
+            "conversation-1",
+            "hello",
+            thinking_enabled=True,
+        )
+    ) == [
         {"__type": "thinking", "content": "推理"},
         "回答",
     ]
-    assert response.closed is True
 
 
 def test_hunyuan_http_200_stream_is_not_consumed_by_json_validation():

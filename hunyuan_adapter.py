@@ -326,6 +326,11 @@ class HunyuanAdapter:
         answer_seen = False
         thinking_seen = False
         channel = "answer"
+        # Hunyuan emits `speech_type: thought` for normal answers when thinking
+        # is disabled. The payload is still `{"type":"text"}` and belongs to
+        # the assistant answer, not the reasoning channel. Only an explicit
+        # reasoning/thought event type should populate reasoning_content.
+        thought_channel_is_reasoning = bool(thinking_enabled)
         try:
             for event_name, payload in self._iter_sse(response):
                 if event_name == "error":
@@ -333,7 +338,11 @@ class HunyuanAdapter:
                 if event_name == "speech_type":
                     value = payload.strip().lower()
                     if value.startswith("thought"):
-                        channel = "thinking"
+                        channel = (
+                            "thinking"
+                            if thought_channel_is_reasoning
+                            else "answer"
+                        )
                     elif value.startswith("text"):
                         channel = "answer"
                     continue
