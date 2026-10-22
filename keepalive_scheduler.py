@@ -23,8 +23,10 @@ from keepalive_store import (
 from logger import get_logger
 from provider_registry import (
     PROVIDER_HUNYUAN,
+    PROVIDER_DOUBAO,
     PROVIDER_KIMI,
     PROVIDER_QWEN,
+    PROVIDER_WENXIN,
     PROVIDER_ZAI,
     normalize_provider,
 )
@@ -88,6 +90,12 @@ class KeepaliveScheduler:
             ),
             PROVIDER_HUNYUAN: threading.BoundedSemaphore(
                 max(1, _env_int("KEEPALIVE_HUNYUAN_CONCURRENCY", 2))
+            ),
+            PROVIDER_WENXIN: threading.BoundedSemaphore(
+                max(1, _env_int("KEEPALIVE_WENXIN_CONCURRENCY", 2))
+            ),
+            PROVIDER_DOUBAO: threading.BoundedSemaphore(
+                max(1, _env_int("KEEPALIVE_DOUBAO_CONCURRENCY", 2))
             ),
         }
 
@@ -384,6 +392,65 @@ class KeepaliveScheduler:
                     acct.refresh_token,
                 )
             except HunyuanAuthError as exc:
+                return (
+                    keepalive.ProbeResult(401, False, 401, str(exc)),
+                    acct.cookies,
+                    acct.device_id,
+                    acct.token,
+                    acct.refresh_token,
+                )
+        if provider == PROVIDER_WENXIN:
+            from wenxin_adapter import WenxinAdapter, WenxinAuthError
+
+            try:
+                adapter = WenxinAdapter(
+                    token=acct.token,
+                    lid=acct.user_id,
+                    cookies=acct.cookies,
+                    device_id=acct.device_id,
+                    user_id=acct.user_id,
+                    session_id=acct.session_id,
+                    proxy=proxy_url or None,
+                )
+                adapter.check_health()
+                return (
+                    keepalive.ProbeResult(200, True, 0, ""),
+                    acct.cookies,
+                    acct.device_id,
+                    acct.token,
+                    acct.refresh_token,
+                )
+            except WenxinAuthError as exc:
+                return (
+                    keepalive.ProbeResult(401, False, 401, str(exc)),
+                    acct.cookies,
+                    acct.device_id,
+                    acct.token,
+                    acct.refresh_token,
+                )
+        if provider == PROVIDER_DOUBAO:
+            from doubao_adapter import DoubaoAdapter, DoubaoAuthError
+
+            try:
+                adapter = DoubaoAdapter(
+                    cookies=acct.cookies,
+                    device_id=acct.device_id,
+                    web_id=acct.user_id,
+                    tea_uuid=acct.topic_id,
+                    session_id=acct.session_id,
+                    request_url=acct.xsrf_token,
+                    request_body=acct.refresh_token,
+                    proxy=proxy_url or None,
+                )
+                adapter.check_health()
+                return (
+                    keepalive.ProbeResult(200, True, 0, ""),
+                    acct.cookies,
+                    acct.device_id,
+                    acct.token,
+                    acct.refresh_token,
+                )
+            except DoubaoAuthError as exc:
                 return (
                     keepalive.ProbeResult(401, False, 401, str(exc)),
                     acct.cookies,

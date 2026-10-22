@@ -79,7 +79,9 @@ export function AccountTable({
                           a.provider === 'zai' ||
                           a.provider === 'kimi' ||
                           a.provider === 'qianwen' ||
-                          a.provider === 'hunyuan'
+                          a.provider === 'hunyuan' ||
+                          a.provider === 'wenxin' ||
+                          a.provider === 'doubao'
                             ? 'outline'
                             : 'secondary'
                         }

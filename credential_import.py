@@ -37,6 +37,7 @@ class ImportedCredentials:
     refresh_token: str = ""
     provider: str = ""
     source: str = ""
+    xsrf_token: str = ""
     warnings: list[str] = field(default_factory=list)
 
     def public_summary(self) -> dict[str, Any]:
@@ -79,6 +80,10 @@ def parse_credential_payload(payload: str | dict | list) -> ImportedCredentials:
             text = text.split(":", 1)[1].strip()
         if "hunyuan_token=" in text and "hunyuan_user=" in text:
             return _from_hunyuan_cookie_string(text)
+        if "BDUSS=" in text:
+            return _from_wenxin_cookie_string(text)
+        if "sessionid=" in text and "ttwid=" in text:
+            return _from_doubao_cookie_string(text)
     data = _coerce_json(payload)
     if isinstance(data, dict):
         log = data.get("log")
@@ -159,6 +164,10 @@ def _from_browser_export(data: dict) -> ImportedCredentials:
         token = token or _cookie_value(cookies, "hunyuan_token")
         user_id = user_id or _cookie_value(cookies, "hunyuan_user")
         provider = "hunyuan"
+    if str(provider).strip().lower() in {"wenxin", "ernie", "baidu"}:
+        token = token or _first_string(data, "wenxin_token", "frame_token")
+        user_id = user_id or _first_string(data, "lid", "wenxin_lid")
+        provider = "wenxin"
     if not token:
         raise CredentialImportError("浏览器导出内容中没有 token")
     warnings: list[str] = []
@@ -183,6 +192,24 @@ def _from_browser_export(data: dict) -> ImportedCredentials:
 
 def _from_har(har: dict) -> ImportedCredentials:
     entries = har["log"]["entries"]
+    if any(
+        isinstance(entry, dict)
+        and (
+            "chat.baidu.com/aichat/api/conversation"
+            in str((entry.get("request") or {}).get("url") or "")
+            or "chat.baidu.com/csaitab/history/list"
+            in str((entry.get("request") or {}).get("url") or "")
+            or "wenxin.baidu.com" in str((entry.get("request") or {}).get("url") or "")
+        )
+        for entry in entries
+    ):
+        return _from_wenxin_har(entries)
+    if any(
+        isinstance(entry, dict)
+        and "doubao.com" in str((entry.get("request") or {}).get("url") or "")
+        for entry in entries
+    ):
+        return _from_doubao_har(entries)
     if any(
         isinstance(entry, dict)
         and "hunyuan.tencent.com" in str((entry.get("request") or {}).get("url") or "")
@@ -314,6 +341,134 @@ def _from_hunyuan_har(entries: list[Any]) -> ImportedCredentials:
         source="har:hunyuan-cookie",
         warnings=["Hunyuan 登录 Cookie 为 HttpOnly，退出登录后需要重新导入。"],
     )
+
+
+def _from_wenxin_har(entries: list[Any]) -> ImportedCredentials:
+    cookies: dict[str, str] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        request = entry.get("request") or {}
+        url = str(request.get("url") or "")
+        if not (
+            "chat.baidu.com/aichat/api/conversation" in url
+            or "chat.baidu.com/csaitab/history/list" in url
+            or "wenxin.baidu.com" in url
+        ):
+            continue
+        for item in request.get("cookies") or []:
+            if isinstance(item, dict):
+                name = str(item.get("name") or "").strip()
+                if name:
+                    cookies[name] = str(item.get("value") or "").strip()
+        req_headers = _header_map(request.get("headers"))
+        cookie_header = req_headers.get("cookie")
+        if cookie_header:
+            _merge_cookie_header(cookies, cookie_header)
+    if not _cookie_value(_serialize_cookies(cookies), "BDUSS"):
+        raise CredentialImportError(
+            "HAR 中缺少百度登录 Cookie（BDUSS）。请导出包含 chat.baidu.com 请求 "
+            "Cookie 的 HAR，并在浏览器中保持已登录状态。"
+        )
+    return ImportedCredentials(
+        token="",
+        cookies=_serialize_cookies(cookies),
+        user_id=_cookie_value(_serialize_cookies(cookies), "BAIDUID").split(
+            ":", 1
+        )[0].strip(),
+        provider="wenxin",
+        source="har:wenxin-cookie",
+        warnings=["文心账号会在服务端自动获取页面 token/lid；Cookie 失效后需重新导入。"],
+    )
+
+
+def _from_wenxin_cookie_string(cookies: str) -> ImportedCredentials:
+    normalized = _coerce_cookies(cookies)
+    if not _cookie_value(normalized, "BDUSS"):
+        raise CredentialImportError("文心 Cookie 必须包含 BDUSS")
+    return ImportedCredentials(
+        token="",
+        cookies=normalized,
+        user_id=_cookie_value(normalized, "BAIDUID").split(":", 1)[0].strip(),
+        provider="wenxin",
+        source="wenxin-cookie",
+        warnings=["文心账号会在服务端自动获取页面 token/lid；Cookie 失效后需重新导入。"],
+    )
+
+
+def _from_doubao_cookie_string(cookies: str) -> ImportedCredentials:
+    normalized = _coerce_cookies(cookies)
+    if not _cookie_value(normalized, "sessionid"):
+        raise CredentialImportError("Doubao Cookie 必须包含 sessionid")
+    return ImportedCredentials(
+        token="",
+        cookies=normalized,
+        user_id=_cookie_value(normalized, "web_id")
+        or _cookie_value(normalized, "ttwid"),
+        device_id=_cookie_value(normalized, "device_id")
+        or "7685346952515520051",
+        provider="doubao",
+        source="doubao-cookie",
+        warnings=["豆包账号依赖登录 Cookie 与浏览器签名参数；Cookie 失效后需重新导入。"],
+    )
+
+
+def _from_doubao_har(entries: list[Any]) -> ImportedCredentials:
+    cookies: dict[str, str] = {}
+    device_id = ""
+    web_id = ""
+    tea_uuid = ""
+    request_url = ""
+    request_body = ""
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        request = entry.get("request") or {}
+        url = str(request.get("url") or "")
+        if "doubao.com" not in url:
+            continue
+        for item in request.get("cookies") or []:
+            if isinstance(item, dict):
+                name = str(item.get("name") or "").strip()
+                if name:
+                    cookies[name] = str(item.get("value") or "").strip()
+        headers = _header_map(request.get("headers"))
+        cookie_header = headers.get("cookie")
+        if cookie_header:
+            _merge_cookie_header(cookies, cookie_header)
+        for item in request.get("queryString") or []:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "")
+            value = str(item.get("value") or "")
+            if name == "device_id":
+                device_id = value
+            elif name == "web_id":
+                web_id = value
+            elif name == "tea_uuid":
+                tea_uuid = value
+        if "/chat/completion" in url:
+            request_url = url
+            request_body = (request.get("postData") or {}).get("text") or ""
+    normalized = _serialize_cookies(cookies)
+    if not _cookie_value(normalized, "sessionid"):
+        raise CredentialImportError(
+            "HAR 中缺少豆包登录 Cookie（sessionid）。请在已登录浏览器导出 "
+            "包含 www.doubao.com 请求 Cookie 的 HAR。"
+        )
+    return ImportedCredentials(
+        token="",
+        cookies=normalized,
+        user_id=web_id or _cookie_value(normalized, "web_id"),
+        device_id=device_id or _cookie_value(normalized, "device_id"),
+        refresh_token=request_body,
+        xsrf_token=request_url,
+        provider="doubao",
+        source="har:doubao-cookie",
+        warnings=["豆包账号依赖登录 Cookie 与浏览器签名参数；Cookie 失效后需重新导入。"],
+    )
+
+
 
 
 def _header_pairs(headers: Any) -> list[tuple[str, str]]:

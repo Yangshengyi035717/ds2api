@@ -48,6 +48,8 @@ def test_models_expose_sub2api_metadata(compat_client):
         "kimi-k2.8",
         "qwen3.7-max",
         "hunyuan-hy4-preview",
+        "wenxin-smart-mode",
+        "doubao-seed",
     }
     deepseek = next(model for model in body["data"] if model["id"] == "deepseek-chat")
     zai = next(model for model in body["data"] if model["id"] == "glm-5.3-flash")
@@ -75,6 +77,16 @@ def test_models_expose_sub2api_metadata(compat_client):
     )
     assert hunyuan["provider"] == "hunyuan"
     assert hunyuan["display_name"] == "Hunyuan HY4 Preview"
+    wenxin = next(
+        model for model in body["data"] if model["id"] == "wenxin-smart-mode"
+    )
+    assert wenxin["provider"] == "wenxin"
+    assert wenxin["display_name"] == "Wenxin Smart Mode"
+    doubao = next(
+        model for model in body["data"] if model["id"] == "doubao-seed"
+    )
+    assert doubao["provider"] == "doubao"
+    assert doubao["display_name"] == "Doubao Seed"
 
 
 def test_single_model_lookup_and_openai_404(compat_client):
@@ -99,6 +111,14 @@ def test_single_model_lookup_and_openai_404(compat_client):
     hunyuan = client.get("/v1/models/hunyuan-hy4-preview", headers=_auth(key))
     assert hunyuan.status_code == 200
     assert hunyuan.json()["provider"] == "hunyuan"
+
+    wenxin = client.get("/v1/models/wenxin-smart-mode", headers=_auth(key))
+    assert wenxin.status_code == 200
+    assert wenxin.json()["provider"] == "wenxin"
+
+    doubao = client.get("/v1/models/doubao-seed", headers=_auth(key))
+    assert doubao.status_code == 200
+    assert doubao.json()["provider"] == "doubao"
 
     missing = client.get("/v1/models/not-a-model", headers=_auth(key))
     assert missing.status_code == 404
@@ -151,6 +171,8 @@ def test_provider_manifest_is_authenticated_and_descriptive(compat_client):
         "kimi",
         "qianwen",
         "hunyuan",
+        "wenxin",
+        "doubao",
     }
     assert body["pricing"]["automatic"] is False
 
@@ -332,6 +354,86 @@ def test_hunyuan_request_routes_to_hunyuan_provider(compat_client, monkeypatch):
     assert captured["provider"] == "hunyuan"
     assert captured["model_name"] == "hunyuan-hy4-preview"
     assert captured["upstream_model"] == "hy4-preview"
+
+
+def test_wenxin_request_routes_to_wenxin_provider(compat_client, monkeypatch):
+    client, key, _ = compat_client
+    captured = {}
+
+    def fake_nonstream(*args, **kwargs):
+        captured.update(kwargs)
+        return {
+            "id": "chatcmpl-wenxin",
+            "object": "chat.completion",
+            "model": kwargs["model_name"],
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "wenxin response"},
+                "finish_reason": "stop",
+            }],
+            "usage": {
+                "prompt_tokens": 1,
+                "completion_tokens": 1,
+                "total_tokens": 2,
+            },
+        }
+
+    monkeypatch.setattr(server, "_handle_nonstream", fake_nonstream)
+
+    response = client.post(
+        "/v1/chat/completions",
+        headers=_auth(key),
+        json={
+            "model": "wenxin-smart-mode",
+            "messages": [{"role": "user", "content": "hello"}],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["model"] == "wenxin-smart-mode"
+    assert captured["provider"] == "wenxin"
+    assert captured["model_name"] == "wenxin-smart-mode"
+    assert captured["upstream_model"] == "smartMode"
+
+
+def test_doubao_request_routes_to_doubao_provider(compat_client, monkeypatch):
+    client, key, _ = compat_client
+    captured = {}
+
+    def fake_nonstream(*args, **kwargs):
+        captured.update(kwargs)
+        return {
+            "id": "chatcmpl-doubao",
+            "object": "chat.completion",
+            "model": kwargs["model_name"],
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "doubao response"},
+                "finish_reason": "stop",
+            }],
+            "usage": {
+                "prompt_tokens": 1,
+                "completion_tokens": 1,
+                "total_tokens": 2,
+            },
+        }
+
+    monkeypatch.setattr(server, "_handle_nonstream", fake_nonstream)
+
+    response = client.post(
+        "/v1/chat/completions",
+        headers=_auth(key),
+        json={
+            "model": "doubao-seed",
+            "messages": [{"role": "user", "content": "hello"}],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["model"] == "doubao-seed"
+    assert captured["provider"] == "doubao"
+    assert captured["model_name"] == "doubao-seed"
+    assert captured["upstream_model"] == "0"
 
 
 def test_responses_stream_translation(compat_client, monkeypatch):

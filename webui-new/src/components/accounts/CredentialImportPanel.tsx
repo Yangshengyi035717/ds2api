@@ -116,7 +116,7 @@ const KIMI_EXPORT_SCRIPT = `(() => {
 
 interface Props {
   onImported: (account: Account) => void
-  provider?: 'deepseek' | 'zai' | 'kimi' | 'hunyuan'
+  provider?: 'deepseek' | 'zai' | 'kimi' | 'hunyuan' | 'wenxin' | 'doubao'
 }
 
 export function CredentialImportPanel({ onImported, provider = 'deepseek' }: Props) {
@@ -127,6 +127,8 @@ export function CredentialImportPanel({ onImported, provider = 'deepseek' }: Pro
   const isZai = provider === 'zai'
   const isKimi = provider === 'kimi'
   const isHunyuan = provider === 'hunyuan'
+  const isWenxin = provider === 'wenxin'
+  const isDoubao = provider === 'doubao'
 
   const placeholder = useMemo(
     () =>
@@ -136,12 +138,16 @@ export function CredentialImportPanel({ onImported, provider = 'deepseek' }: Pro
           ? '粘贴在 www.kimi.com 控制台运行“复制导出脚本”后输出的 JSON。'
           : isHunyuan
             ? '粘贴 api.hunyuan.tencent.com 请求的完整 Cookie 请求头，或包含该请求的 HAR。'
-            : '粘贴 DevTools 导出的 HAR，或在 chat.deepseek.com 控制台运行“复制导出脚本”后粘贴输出的 JSON。',
-    [isHunyuan, isKimi, isZai],
+            : isWenxin
+              ? '粘贴包含 chat.baidu.com/aichat/api/conversation 请求的 HAR。'
+              : isDoubao
+                ? '粘贴 www.doubao.com 请求的完整 Cookie 请求头，或包含该请求的 HAR。'
+                : '粘贴 DevTools 导出的 HAR，或在 chat.deepseek.com 控制台运行“复制导出脚本”后粘贴输出的 JSON。',
+    [isDoubao, isHunyuan, isKimi, isWenxin, isZai],
   )
 
   const copyScript = async () => {
-    if (isHunyuan) return
+    if (isHunyuan || isWenxin || isDoubao) return
     try {
       await navigator.clipboard.writeText(
         isKimi
@@ -176,6 +182,10 @@ export function CredentialImportPanel({ onImported, provider = 'deepseek' }: Pro
         title: res.action === 'updated' ? '账号凭据已更新' : '账号已导入',
         description: isHunyuan
           ? '已导入 Hunyuan Cookie'
+          : isWenxin
+            ? '已导入 Wenxin 登录 Cookie'
+            : isDoubao
+              ? '已导入 Doubao 登录 Cookie'
           : res.import.has_device_id
             ? '已包含 Device ID'
             : '未包含 Device ID，建议重新导出',
@@ -213,6 +223,23 @@ export function CredentialImportPanel({ onImported, provider = 'deepseek' }: Pro
             <code className="font-mono">hunyuan_user</code> 与{' '}
             <code className="font-mono">hunyuan_token</code>。
           </p>
+        ) : isWenxin ? (
+          <p>
+            文心使用百度登录 Cookie。请在已登录的{' '}
+            <code className="font-mono">wenxin.baidu.com</code> 页面打开 DevTools → Network，
+            复制任一 <code className="font-mono">chat.baidu.com</code> 请求的完整 Cookie，
+            或导出包含 Cookie 的 HAR。Cookie 必须包含{' '}
+            <code className="font-mono">BDUSS</code>；服务端会自动获取页面 token/lid。
+          </p>
+        ) : isDoubao ? (
+          <p>
+            豆包使用登录 Cookie 与浏览器签名参数。请在已登录的{' '}
+            <code className="font-mono">www.doubao.com</code> 页面打开 DevTools → Network，
+            复制任一 <code className="font-mono">www.doubao.com</code> 请求的完整 Cookie，
+            或导出包含 Cookie 的 HAR。Cookie 必须包含{' '}
+            <code className="font-mono">sessionid</code> 与{' '}
+            <code className="font-mono">ttwid</code>。
+          </p>
         ) : (
           <p>
             DeepSeek 登录使用设备绑定的 MFA 签名，服务器无法代替浏览器完成密码登录。
@@ -231,9 +258,13 @@ export function CredentialImportPanel({ onImported, provider = 'deepseek' }: Pro
                 ? 'Kimi 浏览器导出 JSON'
                 : isHunyuan
                   ? '混元 Cookie 或 HAR'
+                  : isWenxin
+                    ? '文心 Cookie 或 HAR'
+                    : isDoubao
+                      ? '豆包 Cookie 或 HAR'
                   : '凭据内容（HAR 或浏览器导出 JSON）'}
           </Label>
-          {!isHunyuan && (
+          {!isHunyuan && !isWenxin && !isDoubao && (
             <Button type="button" size="sm" variant="outline" onClick={copyScript}>
               <ClipboardCopy className="h-3.5 w-3.5" />
               复制{isZai ? ' z.ai ' : isKimi ? ' Kimi ' : '浏览器'}导出脚本
@@ -257,6 +288,10 @@ export function CredentialImportPanel({ onImported, provider = 'deepseek' }: Pro
                 ? '服务端只提取 access_token / refresh_token / device_id / cookie'
                 : isHunyuan
                   ? '支持 Cookie 字符串或整份 HAR，服务端只提取 hunyuan_user / hunyuan_token / Cookie'
+                  : isWenxin
+                    ? '支持 Cookie 字符串或整份 HAR，服务端只提取 BDUSS / BAIDUID 与登录 Cookie'
+                    : isDoubao
+                      ? '支持 Cookie 字符串或整份 HAR，服务端只提取 sessionid / ttwid / device_id'
                   : '支持整份 HAR，服务端只提取 token / cookie / device_id'}
         </p>
       </div>
@@ -273,17 +308,27 @@ export function CredentialImportPanel({ onImported, provider = 'deepseek' }: Pro
                   ? 'www.kimi.com'
                   : isHunyuan
                     ? 'aistudio.tencent.com'
+                    : isWenxin
+                      ? 'wenxin.baidu.com'
+                      : isDoubao
+                        ? 'www.doubao.com'
                     : 'chat.deepseek.com'}
             </code>。
           </li>
           <li>
-            {isHunyuan
-              ? '打开 DevTools → Network，选择一个 api.hunyuan.tencent.com 请求。'
+            {isHunyuan || isWenxin || isDoubao
+              ? isWenxin
+                ? '打开 DevTools → Network，选择任一 chat.baidu.com 请求。'
+                : isDoubao
+                  ? '打开 DevTools → Network，选择任一 www.doubao.com 请求。'
+                  : '打开 DevTools → Network，选择一个 api.hunyuan.tencent.com 请求。'
               : '打开 DevTools → Console，运行上方脚本。'}
           </li>
           <li>
-            {isHunyuan
-              ? '复制完整 Cookie 请求头，或导出 HAR 并粘贴到上面。'
+            {isHunyuan || isWenxin || isDoubao
+              ? isWenxin
+                ? '复制完整 Cookie 请求头，或导出 HAR 并粘贴到上面。'
+                : '复制完整 Cookie 请求头，或导出 HAR 并粘贴到上面。'
               : '脚本会把 JSON 复制到剪贴板，粘贴到上面即可。'}
           </li>
         </ol>

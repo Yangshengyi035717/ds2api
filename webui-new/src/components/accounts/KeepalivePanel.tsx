@@ -6,7 +6,7 @@ import type { KeepaliveStatus } from '@/lib/types'
 
 interface Props {
   status?: KeepaliveStatus
-  providerFilter: 'all' | 'deepseek' | 'zai' | 'kimi' | 'qianwen' | 'hunyuan'
+  providerFilter: 'all' | 'deepseek' | 'zai' | 'kimi' | 'qianwen' | 'hunyuan' | 'wenxin' | 'doubao'
   busy: boolean
   onBulk: (action: 'enable' | 'disable' | 'probe') => void
 }

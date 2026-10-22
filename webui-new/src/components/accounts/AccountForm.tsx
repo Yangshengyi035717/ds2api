@@ -65,6 +65,8 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
     const isKimi = provider === 'kimi'
     const isQwen = provider === 'qianwen'
     const isHunyuan = provider === 'hunyuan'
+    const isWenxin = provider === 'wenxin'
+    const isDoubao = provider === 'doubao'
     const effectiveRefreshToken = refreshToken.trim()
     if (provider === 'zai' && !effectiveUserId && !(isEdit && account?.has_user_id)) {
       toast({ title: 'z.ai 账号需要 User ID', variant: 'destructive' })
@@ -84,6 +86,30 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
       )
     ) {
       toast({ title: '混元账号需要 Cookie', variant: 'destructive' })
+      return
+    }
+    if (
+      isWenxin
+      && !cookies.trim()
+      && !(
+        isEdit
+        && account?.provider === 'wenxin'
+        && account.cookies_preview
+      )
+    ) {
+      toast({ title: '文心账号需要包含 BDUSS 的 Cookie', variant: 'destructive' })
+      return
+    }
+    if (
+      isDoubao
+      && !cookies.trim()
+      && !(
+        isEdit
+        && account?.provider === 'doubao'
+        && account.cookies_preview
+      )
+    ) {
+      toast({ title: '豆包账号需要包含 sessionid 的 Cookie', variant: 'destructive' })
       return
     }
     if (
@@ -116,7 +142,13 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
         const saved: Account = { ...account, email: email || account.email }
         onSaved(saved)
       } else {
-        if (!token && provider !== 'qianwen' && provider !== 'hunyuan') {
+        if (
+          !token
+          && provider !== 'qianwen'
+          && provider !== 'hunyuan'
+          && provider !== 'wenxin'
+          && provider !== 'doubao'
+        ) {
           toast({ title: 'Token 不能为空', variant: 'destructive' })
           setBusy(false)
           return
@@ -170,6 +202,8 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
             <SelectItem value="kimi">Kimi</SelectItem>
             <SelectItem value="qianwen">千问</SelectItem>
             <SelectItem value="hunyuan">混元</SelectItem>
+            <SelectItem value="wenxin">文心</SelectItem>
+            <SelectItem value="doubao">豆包</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -243,6 +277,21 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
           </div>
         </div>
       )}
+      {provider === 'wenxin' && (
+        <div className="rounded-md border border-primary/20 bg-primary/5 p-3 text-xs leading-relaxed text-muted-foreground">
+          文心账号需要百度登录 Cookie（必须包含{' '}
+          <code className="font-mono">BDUSS</code>）。推荐在 WebUI 使用「文心导入」
+          粘贴 Cookie 或 HAR；服务端会自动获取页面 token/lid。
+        </div>
+      )}
+      {provider === 'doubao' && (
+        <div className="rounded-md border border-primary/20 bg-primary/5 p-3 text-xs leading-relaxed text-muted-foreground">
+          豆包账号需要已登录浏览器的完整 Cookie（必须包含{' '}
+          <code className="font-mono">sessionid</code>、{' '}
+          <code className="font-mono">ttwid</code>）。推荐在 WebUI 使用「豆包导入」
+          粘贴 Cookie 或 HAR。
+        </div>
+      )}
       {provider === 'hunyuan' && (
         <div className="rounded-md border border-primary/20 bg-primary/5 p-3 text-xs leading-relaxed text-muted-foreground">
           混元使用 Cookie 登录。请在已登录的{' '}
@@ -254,7 +303,7 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
           <code className="font-mono">hunyuan_token</code>；Token 可留空，由服务端从 Cookie 提取。
         </div>
       )}
-      {provider !== 'hunyuan' && (
+      {provider !== 'hunyuan' && provider !== 'wenxin' && provider !== 'doubao' && (
         <div className="space-y-1.5">
           <Label htmlFor="acct-token">Token</Label>
           <Input

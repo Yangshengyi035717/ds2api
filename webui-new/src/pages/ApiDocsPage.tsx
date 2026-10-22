@@ -208,6 +208,10 @@ export default function ApiDocsPage() {
     ?? 'kimi-k2.6'
   const hunyuanModel = models.find((model) => model.provider === 'hunyuan')?.id
     ?? 'hunyuan-hy4-preview'
+  const wenxinModel = models.find((model) => model.provider === 'wenxin')?.id
+    ?? 'wenxin-smart-mode'
+  const doubaoModel = models.find((model) => model.provider === 'doubao')?.id
+    ?? 'doubao-seed'
 
   return (
     <div className="mx-auto max-w-[1180px] space-y-4 animate-fade-in">
@@ -298,7 +302,7 @@ export default function ApiDocsPage() {
           </Card>
 
           <Tabs defaultValue="quick">
-            <TabsList className="grid h-auto w-full grid-cols-2 sm:grid-cols-3 lg:grid-cols-9">
+            <TabsList className="grid h-auto w-full grid-cols-2 sm:grid-cols-3 lg:grid-cols-11">
               <TabsTrigger value="quick">快速开始</TabsTrigger>
               <TabsTrigger value="openai">OpenAI</TabsTrigger>
               <TabsTrigger value="responses">Responses</TabsTrigger>
@@ -306,6 +310,8 @@ export default function ApiDocsPage() {
               <TabsTrigger value="zai">z.ai</TabsTrigger>
               <TabsTrigger value="kimi">Kimi</TabsTrigger>
               <TabsTrigger value="hunyuan">混元</TabsTrigger>
+              <TabsTrigger value="wenxin">文心</TabsTrigger>
+              <TabsTrigger value="doubao">豆包</TabsTrigger>
               <TabsTrigger value="sub2api">Sub2API</TabsTrigger>
               <TabsTrigger value="errors">错误与限制</TabsTrigger>
             </TabsList>
@@ -536,6 +542,71 @@ export default function ApiDocsPage() {
                     <FieldRow name="协议" description="text/event-stream；解析 speech_type、text、meta 与 error 事件。" />
                     <FieldRow name="thinking_mode" description="映射 effort=high / no_think。" />
                     <FieldRow name="search_enabled" description="映射 supportInternetSearch。" />
+                  </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="wenxin" className="space-y-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">百度文心 / Wenxin Smart Mode</CardTitle>
+                  <CardDescription>
+                    文心使用 chat.baidu.com Web SSE 协议；服务端把生成事件转换为统一的
+                    OpenAI / Anthropic 流式响应。
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <MethodPath method="POST" path="/v1/chat/completions" />
+                  <CodeBlock
+                    code={openAiRequest(wenxinModel)}
+                    title="OpenAI Chat Completions"
+                    language="json"
+                  />
+                  <CodeBlock
+                    code={openAiStream(wenxinModel)}
+                    title="流式 cURL"
+                    language="bash"
+                  />
+                  <div>
+                    <FieldRow name="公开模型名" description={`${wenxinModel}；请求自动路由到 provider=wenxin 账号。`} />
+                    <FieldRow name="默认上游模型" description="wenxin-smart-mode → smartMode；由 WENXIN_UPSTREAM_MODEL 控制。" />
+                    <FieldRow name="认证" description="需要页面下发的 token 与 lid；可在账号池粘贴 conversation HAR 自动提取。" />
+                    <FieldRow name="协议" description="text/event-stream；解析 basedata、message 与 generator 增量。" />
+                    <FieldRow name="thinking_mode" description="映射 usedModel.modelFunction.thinkMode。" />
+                    <FieldRow name="search_enabled" description="映射 usedModel.modelFunction.deepSearch。" />
+                  </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="doubao" className="space-y-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">豆包 / Doubao Seed</CardTitle>
+                  <CardDescription>
+                    豆包使用 chat/completion SSE 协议；服务端把浏览器生成事件转换为统一的
+                    OpenAI / Anthropic 流式响应。
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <MethodPath method="POST" path="/v1/chat/completions" />
+                  <CodeBlock
+                    code={openAiRequest(doubaoModel)}
+                    title="OpenAI Chat Completions"
+                    language="json"
+                  />
+                  <CodeBlock
+                    code={openAiStream(doubaoModel)}
+                    title="流式 cURL"
+                    language="bash"
+                  />
+                  <div>
+                    <FieldRow name="公开模型名" description={`${doubaoModel}；请求自动路由到 provider=doubao 账号。`} />
+                    <FieldRow name="默认上游模型" description="doubao-seed → model_item_key=0；由 DOUBAO_UPSTREAM_MODEL 控制。" />
+                    <FieldRow name="认证" description="需要包含 sessionid、ttwid、msToken 的登录 Cookie；退出登录后需重新导入。" />
+                    <FieldRow name="协议" description="text/event-stream；解析 SSE_ACK、CHUNK_DELTA、STREAM_CHUNK 与 SSE_REPLY_END。" />
+                    <FieldRow name="thinking_mode" description="映射 need_deep_think / reasoning_effort。" />
                   </div>
                 </CardContent>
               </Card>

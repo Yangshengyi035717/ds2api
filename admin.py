@@ -30,10 +30,14 @@ from proxy_pool import get_proxy_pool
 from provider_registry import (
     PROVIDER_DEEPSEEK,
     normalize_provider,
+    doubao_model_name,
+    doubao_upstream_model_name,
     hunyuan_model_name,
     hunyuan_upstream_model_name,
     kimi_model_name,
     kimi_upstream_model_name,
+    wenxin_model_name,
+    wenxin_upstream_model_name,
     zai_upstream_model_name,
 )
 from keepalive_scheduler import get_scheduler_or_store, notify_account_changed
@@ -689,6 +693,10 @@ async def env_info(request: Request):
         "kimi_upstream_model": kimi_upstream_model_name(),
         "hunyuan_model_name": hunyuan_model_name(),
         "hunyuan_upstream_model": hunyuan_upstream_model_name(),
+        "wenxin_model_name": wenxin_model_name(),
+        "wenxin_upstream_model": wenxin_upstream_model_name(),
+        "doubao_model_name": doubao_model_name(),
+        "doubao_upstream_model": doubao_upstream_model_name(),
         "model_name_source": runtime_snapshot["source"],
         "model_routes_configured": bool(os.environ.get("MODEL_ROUTES", "").strip()),
         "rate_limit": {
@@ -723,6 +731,10 @@ async def env_info(request: Request):
             {"name": "KIMI_UPSTREAM_MODEL", "value": kimi_upstream_model_name(), "is_default": _flag("KIMI_UPSTREAM_MODEL") == "default"},
             {"name": "HUNYUAN_MODEL_NAME", "value": hunyuan_model_name(), "is_default": _flag("HUNYUAN_MODEL_NAME") == "default"},
             {"name": "HUNYUAN_UPSTREAM_MODEL", "value": hunyuan_upstream_model_name(), "is_default": _flag("HUNYUAN_UPSTREAM_MODEL") == "default"},
+            {"name": "WENXIN_MODEL_NAME", "value": wenxin_model_name(), "is_default": _flag("WENXIN_MODEL_NAME") == "default"},
+            {"name": "WENXIN_UPSTREAM_MODEL", "value": wenxin_upstream_model_name(), "is_default": _flag("WENXIN_UPSTREAM_MODEL") == "default"},
+            {"name": "DOUBAO_MODEL_NAME", "value": doubao_model_name(), "is_default": _flag("DOUBAO_MODEL_NAME") == "default"},
+            {"name": "DOUBAO_UPSTREAM_MODEL", "value": doubao_upstream_model_name(), "is_default": _flag("DOUBAO_UPSTREAM_MODEL") == "default"},
             {
                 "name": "DEEPSEEK_ADMIN_PASSWORD",
                 "value": "***" if password_state["set"] else "",
@@ -948,7 +960,7 @@ async def import_account(req: CredentialImportRequest, request: Request, respons
     refresh_token = (
         req.refresh_token or imported.refresh_token or ""
     ).strip()
-    xsrf_token = (req.xsrf_token or "").strip()
+    xsrf_token = (req.xsrf_token or imported.xsrf_token or "").strip()
     session_id = (req.session_id or "").strip()
     topic_id = (req.topic_id or "").strip()
     pool = get_pool()

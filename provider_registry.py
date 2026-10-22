@@ -8,12 +8,16 @@ PROVIDER_ZAI = "zai"
 PROVIDER_KIMI = "kimi"
 PROVIDER_QWEN = "qianwen"
 PROVIDER_HUNYUAN = "hunyuan"
+PROVIDER_WENXIN = "wenxin"
+PROVIDER_DOUBAO = "doubao"
 SUPPORTED_PROVIDERS = (
     PROVIDER_DEEPSEEK,
     PROVIDER_ZAI,
     PROVIDER_KIMI,
     PROVIDER_QWEN,
     PROVIDER_HUNYUAN,
+    PROVIDER_WENXIN,
+    PROVIDER_DOUBAO,
 )
 
 PROVIDER_LABELS = {
@@ -22,6 +26,8 @@ PROVIDER_LABELS = {
     PROVIDER_KIMI: "Kimi",
     PROVIDER_QWEN: "千问",
     PROVIDER_HUNYUAN: "混元",
+    PROVIDER_WENXIN: "文心",
+    PROVIDER_DOUBAO: "豆包",
 }
 
 _PROVIDER_ALIASES = {
@@ -41,6 +47,14 @@ _PROVIDER_ALIASES = {
     "tencent": PROVIDER_HUNYUAN,
     "tencent-hunyuan": PROVIDER_HUNYUAN,
     "aistudio": PROVIDER_HUNYUAN,
+    "wenxin": PROVIDER_WENXIN,
+    "ernie": PROVIDER_WENXIN,
+    "baidu": PROVIDER_WENXIN,
+    "baidu-wenxin": PROVIDER_WENXIN,
+    "doubao": PROVIDER_DOUBAO,
+    "byte-dance": PROVIDER_DOUBAO,
+    "bytedance": PROVIDER_DOUBAO,
+    "豆包": PROVIDER_DOUBAO,
 }
 
 _ZAI_MODEL_ALIASES = {
@@ -115,6 +129,19 @@ def provider_for_model(model: str | None) -> str:
         or name == hunyuan_upstream_model_name().lower()
     ):
         return PROVIDER_HUNYUAN
+    if (
+        name.startswith("wenxin")
+        or name.startswith("ernie")
+        or name in {"baidu", "baidu-wenxin"}
+        or name == wenxin_model_name().lower()
+    ):
+        return PROVIDER_WENXIN
+    if (
+        name.startswith("doubao")
+        or name in {"bytedance", "byte-dance"}
+        or name == doubao_model_name().lower()
+    ):
+        return PROVIDER_DOUBAO
     return PROVIDER_DEEPSEEK
 
 
@@ -234,6 +261,72 @@ def hunyuan_upstream_model(model: str | None) -> str:
 
 def available_hunyuan_models() -> list[str]:
     return [hunyuan_model_name()]
+
+
+def wenxin_model_name() -> str:
+    return os.environ.get("WENXIN_MODEL_NAME", "wenxin-smart-mode").strip() or "wenxin-smart-mode"
+
+
+def wenxin_upstream_model_name() -> str:
+    return os.environ.get("WENXIN_UPSTREAM_MODEL", "smartMode").strip() or "smartMode"
+
+
+def wenxin_public_model(model: str | None) -> str:
+    requested = str(model or "").strip()
+    if not requested or requested.lower() in {
+        "wenxin",
+        "ernie",
+        "baidu",
+        "baidu-wenxin",
+    }:
+        return wenxin_model_name()
+    return requested
+
+
+def wenxin_upstream_model(model: str | None) -> str:
+    requested = wenxin_public_model(model)
+    aliases = {
+        wenxin_model_name().lower(): wenxin_upstream_model_name(),
+        "wenxin-smart-mode": "smartMode",
+    }
+    return aliases.get(requested.lower(), requested)
+
+
+def available_wenxin_models() -> list[str]:
+    return [wenxin_model_name()]
+
+
+def doubao_model_name() -> str:
+    return os.environ.get("DOUBAO_MODEL_NAME", "doubao-seed").strip() or "doubao-seed"
+
+
+def doubao_upstream_model_name() -> str:
+    return os.environ.get("DOUBAO_UPSTREAM_MODEL", "0").strip() or "0"
+
+
+def doubao_public_model(model: str | None) -> str:
+    requested = str(model or "").strip()
+    if not requested or requested.lower() in {
+        "doubao",
+        "bytedance",
+        "byte-dance",
+        "豆包",
+    }:
+        return doubao_model_name()
+    return requested
+
+
+def doubao_upstream_model(model: str | None) -> str:
+    requested = doubao_public_model(model)
+    aliases = {
+        doubao_model_name().lower(): doubao_upstream_model_name(),
+        "doubao-seed": "0",
+    }
+    return aliases.get(requested.lower(), requested)
+
+
+def available_doubao_models() -> list[str]:
+    return [doubao_model_name()]
 
 
 def available_models(deepseek_model: str) -> list[str]:

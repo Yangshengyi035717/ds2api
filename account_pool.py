@@ -26,11 +26,15 @@ from hunyuan_adapter import (
     hunyuan_token_from_cookies,
     hunyuan_user_id_from_cookies,
 )
+from wenxin_adapter import WenxinAdapter, wenxin_baiduid, wenxin_cookie_value
+from doubao_adapter import DoubaoAdapter, doubao_cookie_value
 from provider_registry import (
     PROVIDER_DEEPSEEK,
+    PROVIDER_DOUBAO,
     PROVIDER_HUNYUAN,
     PROVIDER_KIMI,
     PROVIDER_QWEN,
+    PROVIDER_WENXIN,
     PROVIDER_ZAI,
     normalize_provider,
     provider_label,
@@ -137,12 +141,22 @@ class Account:
     last_used: float = 0.0
     _adapter: Optional[
         DeepSeekAdapter | ZaiAdapter | KimiAdapter | QwenAdapter | HunyuanAdapter
+        | WenxinAdapter
+        | DoubaoAdapter
     ] = field(default=None, repr=False)
 
     @property
     def adapter(
         self,
-    ) -> DeepSeekAdapter | ZaiAdapter | KimiAdapter | QwenAdapter | HunyuanAdapter:
+    ) -> (
+        DeepSeekAdapter
+        | ZaiAdapter
+        | KimiAdapter
+        | QwenAdapter
+        | HunyuanAdapter
+        | WenxinAdapter
+        | DoubaoAdapter
+    ):
         if self._adapter is None:
             proxy_url = self.proxy.strip()
             if not proxy_url and self.proxy_id:
@@ -185,6 +199,27 @@ class Account:
                     device_id=self.device_id,
                     session_id=self.session_id,
                     topic_id=self.topic_id,
+                    proxy=proxy_url or None,
+                )
+            elif self.provider == PROVIDER_WENXIN:
+                self._adapter = WenxinAdapter(
+                    token=self.token,
+                    lid=self.user_id,
+                    cookies=self.cookies,
+                    device_id=self.device_id,
+                    user_id=self.user_id,
+                    session_id=self.session_id,
+                    proxy=proxy_url or None,
+                )
+            elif self.provider == PROVIDER_DOUBAO:
+                self._adapter = DoubaoAdapter(
+                    cookies=self.cookies,
+                    device_id=self.device_id,
+                    web_id=self.user_id,
+                    tea_uuid=self.topic_id,
+                    session_id=self.session_id,
+                    request_url=self.xsrf_token,
+                    request_body=self.refresh_token,
                     proxy=proxy_url or None,
                 )
             else:
@@ -295,6 +330,16 @@ class AccountPool:
         ):
             acct.state = "error"
             acct.last_error = "Hunyuan account is missing cookies/user"
+        if acct.provider == PROVIDER_WENXIN and (
+            not acct.cookies
+        ):
+            acct.state = "error"
+            acct.last_error = "Wenxin account is missing login cookies"
+        if acct.provider == PROVIDER_DOUBAO and (
+            not acct.cookies or not doubao_cookie_value(acct.cookies, "sessionid")
+        ):
+            acct.state = "error"
+            acct.last_error = "Doubao account is missing sessionid cookies"
         if acct.proxy_id:
             proxy_entry = get_proxy_pool().get_by_id(acct.proxy_id)
             if proxy_entry is None or not proxy_entry.enabled:
@@ -341,6 +386,8 @@ class AccountPool:
             if not token and loaded_provider not in {
                 PROVIDER_QWEN,
                 PROVIDER_HUNYUAN,
+                PROVIDER_WENXIN,
+                PROVIDER_DOUBAO,
             }:
                 log.warning("skipping_account_missing_credentials", extra={"id": item.get("id")})
                 continue
@@ -452,7 +499,21 @@ class AccountPool:
         if provider == PROVIDER_HUNYUAN:
             token = token or hunyuan_token_from_cookies(cookies)
             user_id = user_id or hunyuan_user_id_from_cookies(cookies)
-        if not token and provider not in {PROVIDER_QWEN, PROVIDER_HUNYUAN}:
+        if provider == PROVIDER_WENXIN and not user_id:
+            user_id = wenxin_baiduid(cookies)
+        if provider == PROVIDER_DOUBAO and not user_id:
+            user_id = (
+                doubao_cookie_value(cookies, "web_id")
+                or doubao_cookie_value(cookies, "ttwid")
+            )
+        if provider == PROVIDER_DOUBAO and not device_id:
+            device_id = doubao_cookie_value(cookies, "device_id")
+        if not token and provider not in {
+            PROVIDER_QWEN,
+            PROVIDER_HUNYUAN,
+            PROVIDER_WENXIN,
+            PROVIDER_DOUBAO,
+        }:
             raise ValueError("Token is required")
         if provider == PROVIDER_ZAI and not user_id:
             raise ValueError("z.ai 账号需要 User ID")
@@ -466,6 +527,14 @@ class AccountPool:
             raise ValueError(
                 "Hunyuan 账号需要包含 hunyuan_token 和 hunyuan_user 的 cookies"
             )
+        if provider == PROVIDER_WENXIN and (
+            not cookies or not wenxin_cookie_value(cookies, "BDUSS")
+        ):
+            raise ValueError("Wenxin 账号需要包含 BDUSS 的登录 Cookie")
+        if provider == PROVIDER_DOUBAO and (
+            not cookies or not doubao_cookie_value(cookies, "sessionid")
+        ):
+            raise ValueError("Doubao 账号需要包含 sessionid 的登录 Cookie")
 
         with self._lock:
             fp = _credential_fingerprint(
@@ -646,6 +715,16 @@ class AccountPool:
                 new_user_id = (
                     new_user_id or hunyuan_user_id_from_cookies(new_cookies)
                 )
+            if new_provider == PROVIDER_WENXIN and not new_user_id:
+                new_user_id = wenxin_baiduid(new_cookies)
+            if new_provider == PROVIDER_DOUBAO:
+                new_user_id = new_user_id or (
+                    doubao_cookie_value(new_cookies, "web_id")
+                    or doubao_cookie_value(new_cookies, "ttwid")
+                )
+                new_device_id = new_device_id or doubao_cookie_value(
+                    new_cookies, "device_id"
+                )
             new_proxy_id = (
                 acct.proxy_id
                 if proxy_id is None
@@ -654,6 +733,8 @@ class AccountPool:
             if not new_token and new_provider not in {
                 PROVIDER_QWEN,
                 PROVIDER_HUNYUAN,
+                PROVIDER_WENXIN,
+                PROVIDER_DOUBAO,
             }:
                 raise ValueError("Token cannot be empty")
             if new_provider == PROVIDER_ZAI and not new_user_id:
@@ -664,6 +745,16 @@ class AccountPool:
                 raise ValueError(
                     "Hunyuan 账号需要包含 hunyuan_token 和 hunyuan_user 的 cookies"
                 )
+            if new_provider == PROVIDER_WENXIN and (
+                not new_cookies
+                or not wenxin_cookie_value(new_cookies, "BDUSS")
+            ):
+                raise ValueError("Wenxin 账号需要包含 BDUSS 的登录 Cookie")
+            if new_provider == PROVIDER_DOUBAO and (
+                not new_cookies
+                or not doubao_cookie_value(new_cookies, "sessionid")
+            ):
+                raise ValueError("Doubao 账号需要包含 sessionid 的登录 Cookie")
 
             new_fp = _credential_fingerprint(
                 new_token,

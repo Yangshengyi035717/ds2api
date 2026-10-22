@@ -81,12 +81,16 @@ from api_key_store import get_api_key_store
 from runtime_config import get_runtime_config
 from provider_registry import (
     PROVIDER_DEEPSEEK,
+    PROVIDER_DOUBAO,
     PROVIDER_HUNYUAN,
     PROVIDER_KIMI,
     PROVIDER_QWEN,
+    PROVIDER_WENXIN,
     PROVIDER_ZAI,
     available_hunyuan_models,
     available_kimi_models,
+    available_doubao_models,
+    available_wenxin_models,
     hunyuan_public_model,
     hunyuan_upstream_model,
     kimi_model_name,
@@ -95,6 +99,10 @@ from provider_registry import (
     qwen_model_name,
     qwen_public_model,
     qwen_upstream_model,
+    doubao_public_model,
+    doubao_upstream_model,
+    wenxin_public_model,
+    wenxin_upstream_model,
     normalize_provider,
     provider_for_model,
     provider_label,
@@ -107,6 +115,8 @@ from zai_adapter import ZaiAuthError
 from kimi_adapter import KimiAuthError
 from qwen_adapter import QwenAuthError
 from hunyuan_adapter import HunyuanAuthError
+from wenxin_adapter import WenxinAuthError
+from doubao_adapter import DoubaoAuthError
 
 load_dotenv()
 configure_from_env()
@@ -134,6 +144,10 @@ def _public_model_for_request(model: str | None, provider: str) -> str:
         return qwen_public_model(requested)
     if provider == PROVIDER_HUNYUAN:
         return hunyuan_public_model(requested)
+    if provider == PROVIDER_WENXIN:
+        return wenxin_public_model(requested)
+    if provider == PROVIDER_DOUBAO:
+        return doubao_public_model(requested)
     return canonical_model_name(requested) if requested else _model_name()
 
 
@@ -146,6 +160,10 @@ def _upstream_model_for_request(model: str | None, provider: str) -> str | None:
         return qwen_upstream_model(model)
     if provider == PROVIDER_HUNYUAN:
         return hunyuan_upstream_model(model)
+    if provider == PROVIDER_WENXIN:
+        return wenxin_upstream_model(model)
+    if provider == PROVIDER_DOUBAO:
+        return doubao_upstream_model(model)
     return str(model or "").strip() or None
 
 
@@ -603,6 +621,18 @@ def _model_display_name(name: str) -> str:
             .strip()
             or "Hunyuan HY4 Preview"
         )
+    if name in available_wenxin_models():
+        return (
+            os.environ.get("WENXIN_MODEL_DISPLAY_NAME", "Wenxin Smart Mode")
+            .strip()
+            or "Wenxin Smart Mode"
+        )
+    if name in available_doubao_models():
+        return (
+            os.environ.get("DOUBAO_MODEL_DISPLAY_NAME", "Doubao Seed")
+            .strip()
+            or "Doubao Seed"
+        )
     if name == snapshot["model_name"]:
         return str(snapshot["display_name"])
     configured = os.environ.get("MODEL_DISPLAY_NAME", "").strip()
@@ -627,6 +657,12 @@ def _available_model_names() -> list[str]:
     for hunyuan_name in available_hunyuan_models():
         if hunyuan_name not in names:
             names.append(hunyuan_name)
+    for wenxin_name in available_wenxin_models():
+        if wenxin_name not in names:
+            names.append(wenxin_name)
+    for doubao_name in available_doubao_models():
+        if doubao_name not in names:
+            names.append(doubao_name)
     return names
 
 
@@ -733,6 +769,30 @@ class AcquiredAccount:
                 SESSION_CACHE.put(self._cache_key, sess)
                 self._cached_session = sess
             return session_id
+        if self._provider == PROVIDER_WENXIN:
+            session_id = self.adapter.create_session()
+            self._session_id = session_id
+            if self._cache_key:
+                sess = ChatSession(
+                    chat_session_id=session_id,
+                    account_id=self.acct.id,
+                    provider=self._provider,
+                )
+                SESSION_CACHE.put(self._cache_key, sess)
+                self._cached_session = sess
+            return session_id
+        if self._provider == PROVIDER_DOUBAO:
+            session_id = self.adapter.create_session()
+            self._session_id = session_id
+            if self._cache_key:
+                sess = ChatSession(
+                    chat_session_id=session_id,
+                    account_id=self.acct.id,
+                    provider=self._provider,
+                )
+                SESSION_CACHE.put(self._cache_key, sess)
+                self._cached_session = sess
+            return session_id
         # Reuse the cached session if we have one — multi-turn support.
         if self._cached_session is not None:
             self._session_id = self._cached_session.chat_session_id
@@ -778,6 +838,8 @@ class AcquiredAccount:
             PROVIDER_KIMI,
             PROVIDER_QWEN,
             PROVIDER_HUNYUAN,
+            PROVIDER_WENXIN,
+            PROVIDER_DOUBAO,
         }:
             return full_prompt
         cached = self._cached_session
@@ -1357,7 +1419,14 @@ def _anthropic_nonstream(msg_id: str, prompt: str, tool_names: list[str],
         if cache_key:
             SESSION_CACHE.invalidate(cache_key)
         raise HTTPException(status_code=502, detail="上游返回空响应（可能触发限流），请稍后重试")
-    except (ZaiAuthError, KimiAuthError, QwenAuthError, HunyuanAuthError) as e:
+    except (
+        ZaiAuthError,
+        KimiAuthError,
+        QwenAuthError,
+        HunyuanAuthError,
+        WenxinAuthError,
+        DoubaoAuthError,
+    ) as e:
         get_stats().record(response_model, 0, success=False)
         pool.mark_error(acq.acct, str(e))
         raise HTTPException(status_code=401, detail=str(e))
@@ -1514,7 +1583,14 @@ def _handle_nonstream(proxy_id: str, prompt: str, tools: list[ToolDef] | None = 
         if cache_key:
             SESSION_CACHE.invalidate(cache_key)
         raise HTTPException(status_code=502, detail="上游返回空响应（可能触发限流），请稍后重试")
-    except (ZaiAuthError, KimiAuthError, QwenAuthError, HunyuanAuthError) as e:
+    except (
+        ZaiAuthError,
+        KimiAuthError,
+        QwenAuthError,
+        HunyuanAuthError,
+        WenxinAuthError,
+        DoubaoAuthError,
+    ) as e:
         get_stats().record(response_model, 0, success=False)
         pool.mark_error(acq.acct, str(e))
         raise HTTPException(status_code=401, detail=str(e))
@@ -1916,7 +1992,14 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
                 err_type, err_code, retry_after = "rate_limit_error", "rate_limit_exceeded", TRANSIENT_RETRY_AFTER_SECS
             elif isinstance(
                 e,
-                (ZaiAuthError, KimiAuthError, QwenAuthError, HunyuanAuthError),
+                (
+                    ZaiAuthError,
+                    KimiAuthError,
+                    QwenAuthError,
+                    HunyuanAuthError,
+                    WenxinAuthError,
+                    DoubaoAuthError,
+                ),
             ):
                 err_type, err_code, retry_after = "authentication_error", "invalid_api_key", None
             elif isinstance(e, UpstreamTransientError):
