@@ -28,7 +28,7 @@
 - **Kimi 兼容** — Connect JSON 流式协议与 access/refresh token 自动续期
 - **混元兼容** — AI Studio `hy4-preview` SSE 协议、Cookie 账号池与协议保活
 - **文心兼容** — chat.baidu.com `smartMode` SSE 协议、HAR 凭据导入与账号保活
-- **豆包兼容** — doubao.com `chat/completion` SSE 协议、登录 Cookie 与签名请求模板导入
+- **豆包兼容** — doubao.com `chat/completion` SSE 协议与登录 Cookie 账号池
 - **代理池** — 一号一代理、出口绑定、连通性检测与加密存储
 - **Sub2API 上游适配** — 富模型目录、Provider Manifest、价格/倍率配置和同步脚本
 - **客户端限流** — 滑动窗口，按 API key 和 IP 独立计数；响应头 `X-RateLimit-*`
@@ -139,9 +139,8 @@ wenxin-smart-mode → smartMode
 ### 添加豆包账号
 
 在 WebUI → 账号池 → 添加账号 → **豆包导入** 中粘贴已登录浏览器
-`www.doubao.com` 请求的完整 Cookie，或导出包含 `chat/completion` 请求的 HAR。
-服务端会同时保存该请求的 URL 签名参数（`msToken`、`a_bogus`）和请求体模板，
-并只替换消息文本。
+`www.doubao.com` 请求的完整 Cookie（必须包含 `sessionid`、`ttwid`），或导出包含
+Cookie 的 HAR。服务端按会话 ID 自己生成请求参数，不需要浏览器 `a_bogus`。
 
 公开模型与上游映射：
 
@@ -149,8 +148,7 @@ wenxin-smart-mode → smartMode
 doubao-seed → model_item_key=0
 ```
 
-豆包对请求体和 `a_bogus` 做绑定校验，不能只保存 Cookie 后自行生成参数；签名
-模板失效时应重新从浏览器导出 HAR。
+豆包的 `msToken` 随 Cookie 轮换，无需单独保存；Cookie 失效后重新导入即可。
 
 ### 服务器浏览器登录（noVNC）
 
@@ -181,7 +179,7 @@ Job，并按 `provider` 自动分流：
 - z.ai：周期调用 `GET /api/v1/chats/?page=1&type=all&channel=zai-web`
 - 混元：周期调用 `POST /api/new-portal/chat/conversation/list`
 - 文心：周期提交轻量 `conversation` SSE 请求并校验 `basedata`
-- 豆包：周期提交轻量 `chat/completion` SSE 请求并校验 `SSE_ACK`
+- 豆包：周期调用只读接口 `GET /samantha/notice/info` 校验登录态（不消耗生成额度）
 
 探活只使用只读接口，不创建 chat、不发送 prompt，因此不消耗生成额度。
 上游轮换的 WAF / session Cookie 会自动执行 `PUT /admin/api/accounts/{id}`

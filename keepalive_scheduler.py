@@ -438,8 +438,6 @@ class KeepaliveScheduler:
                     web_id=acct.user_id,
                     tea_uuid=acct.topic_id,
                     session_id=acct.session_id,
-                    request_url=acct.xsrf_token,
-                    request_body=acct.refresh_token,
                     proxy=proxy_url or None,
                 )
                 adapter.check_health()

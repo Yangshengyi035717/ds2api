@@ -400,6 +400,8 @@ def _from_doubao_cookie_string(cookies: str) -> ImportedCredentials:
     normalized = _coerce_cookies(cookies)
     if not _cookie_value(normalized, "sessionid"):
         raise CredentialImportError("Doubao Cookie 必须包含 sessionid")
+    # 实测：登录 Cookie 足够；服务端可用自生成 query 直连 chat/completion，
+    # 不需要浏览器 a_bogus。msToken 由 Cookie 携带，缺失时上游也会重签。
     return ImportedCredentials(
         token="",
         cookies=normalized,
@@ -409,7 +411,7 @@ def _from_doubao_cookie_string(cookies: str) -> ImportedCredentials:
         or "7685346952515520051",
         provider="doubao",
         source="doubao-cookie",
-        warnings=["豆包账号依赖登录 Cookie 与浏览器签名参数；Cookie 失效后需重新导入。"],
+        warnings=["豆包账号依赖登录 Cookie（sessionid）；Cookie 失效后需重新导入。"],
     )
 
 
@@ -417,9 +419,6 @@ def _from_doubao_har(entries: list[Any]) -> ImportedCredentials:
     cookies: dict[str, str] = {}
     device_id = ""
     web_id = ""
-    tea_uuid = ""
-    request_url = ""
-    request_body = ""
     for entry in entries:
         if not isinstance(entry, dict):
             continue
@@ -445,11 +444,6 @@ def _from_doubao_har(entries: list[Any]) -> ImportedCredentials:
                 device_id = value
             elif name == "web_id":
                 web_id = value
-            elif name == "tea_uuid":
-                tea_uuid = value
-        if "/chat/completion" in url:
-            request_url = url
-            request_body = (request.get("postData") or {}).get("text") or ""
     normalized = _serialize_cookies(cookies)
     if not _cookie_value(normalized, "sessionid"):
         raise CredentialImportError(
@@ -461,8 +455,6 @@ def _from_doubao_har(entries: list[Any]) -> ImportedCredentials:
         cookies=normalized,
         user_id=web_id or _cookie_value(normalized, "web_id"),
         device_id=device_id or _cookie_value(normalized, "device_id"),
-        refresh_token=request_body,
-        xsrf_token=request_url,
         provider="doubao",
         source="har:doubao-cookie",
         warnings=["豆包账号依赖登录 Cookie 与浏览器签名参数；Cookie 失效后需重新导入。"],

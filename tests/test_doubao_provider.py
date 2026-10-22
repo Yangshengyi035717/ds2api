@@ -115,7 +115,7 @@ def test_doubao_cookie_string_imports_login_identity():
     assert imported.source == "doubao-cookie"
 
 
-def test_doubao_har_preserves_signed_request_template():
+def test_doubao_har_imports_login_cookie_and_identity():
     har = {
         "log": {
             "entries": [
@@ -149,11 +149,8 @@ def test_doubao_har_preserves_signed_request_template():
     assert imported.provider == "doubao"
     assert imported.device_id == "dev"
     assert imported.user_id == "web"
-    assert imported.xsrf_token.startswith(
-        "https://www.doubao.com/chat/completion?"
-    )
-    assert "a_bogus=sig" in imported.xsrf_token
-    assert imported.refresh_token == '{"messages":[]}'
+    assert imported.cookies == "sessionid=sid; ttwid=tw"
+    assert imported.source == "har:doubao-cookie"
 
 
 @pytest.fixture

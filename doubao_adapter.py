@@ -13,6 +13,7 @@ from adapter import RateLimitError, UpstreamHintError, UpstreamTransientError
 from provider_registry import doubao_model_name, doubao_upstream_model
 
 COMPLETION_URL = "https://www.doubao.com/chat/completion"
+HEALTH_URL = "https://www.doubao.com/samantha/notice/info"
 IMPERSONATE = os.environ.get("DOUBAO_IMPERSONATE", "chrome150")
 DEFAULT_BOT_ID = os.environ.get("DOUBAO_BOT_ID", "7338286299411103781").strip()
 DEFAULT_DEVICE_ID = os.environ.get("DOUBAO_DEVICE_ID", "").strip()
@@ -55,8 +56,6 @@ class DoubaoAdapter:
         bot_id: str = "",
         session_id: str = "",
         user_id: str = "",
-        request_url: str = "",
-        request_body: str | dict = "",
         proxy: str | None = None,
         impersonate: str = IMPERSONATE,
     ) -> None:
@@ -86,16 +85,6 @@ class DoubaoAdapter:
         self.bot_id = (bot_id or "").strip() or DEFAULT_BOT_ID
         self.session_id = (session_id or "").strip()
         self.user_id = (user_id or "").strip()
-        self.request_url = (request_url or "").strip()
-        if isinstance(request_body, str):
-            try:
-                self.request_body = json.loads(request_body)
-            except json.JSONDecodeError:
-                self.request_body = {}
-        elif isinstance(request_body, dict):
-            self.request_body = request_body
-        else:
-            self.request_body = {}
         self.proxy = proxy
         self._client = cffi_requests.Session(
             impersonate=impersonate,
@@ -187,22 +176,13 @@ class DoubaoAdapter:
             )
 
     def check_health(self) -> bool:
-        response = self._client.post(
-            COMPLETION_URL,
+        # 只读接口：不创建会话、不消耗生成额度。
+        response = self._client.get(
+            HEALTH_URL,
             params=self._query(),
             headers=self._headers(),
-            json=self._body("你好", thinking=False, search=False),
-            stream=True,
         )
         self._raise_response(response, "health")
-        try:
-            for event, payload in self._iter_sse(response):
-                if event == "SSE_ACK":
-                    return True
-                if event == "SSE_REPLY_END":
-                    return True
-        finally:
-            response.close()
         return True
 
     def _body(self, prompt: str, *, thinking: bool, search: bool) -> dict[str, Any]:
@@ -364,21 +344,6 @@ class DoubaoAdapter:
             yield event, "\n".join(data_lines)
 
     def _open(self, prompt: str, *, thinking: bool, search: bool):
-        if self.request_url and self.request_body:
-            body = json.loads(json.dumps(self.request_body))
-            for message in body.get("messages") or []:
-                for block in message.get("content_block") or []:
-                    text_block = (block.get("content") or {}).get("text_block")
-                    if isinstance(text_block, dict):
-                        text_block["text"] = prompt
-            response = self._client.post(
-                self.request_url,
-                headers=self._headers(),
-                json=body,
-                stream=True,
-            )
-            self._raise_response(response, "chat")
-            return response
         response = self._client.post(
             COMPLETION_URL,
             params=self._query(),

@@ -233,12 +233,12 @@ export function CredentialImportPanel({ onImported, provider = 'deepseek' }: Pro
           </p>
         ) : isDoubao ? (
           <p>
-            豆包使用登录 Cookie 与浏览器签名参数。请在已登录的{' '}
+            豆包使用登录 Cookie。请在已登录的{' '}
             <code className="font-mono">www.doubao.com</code> 页面打开 DevTools → Network，
             复制任一 <code className="font-mono">www.doubao.com</code> 请求的完整 Cookie，
             或导出包含 Cookie 的 HAR。Cookie 必须包含{' '}
             <code className="font-mono">sessionid</code> 与{' '}
-            <code className="font-mono">ttwid</code>。
+            <code className="font-mono">ttwid</code>；服务端自行生成请求参数。
           </p>
         ) : (
           <p>

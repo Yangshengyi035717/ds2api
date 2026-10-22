@@ -218,8 +218,6 @@ class Account:
                     web_id=self.user_id,
                     tea_uuid=self.topic_id,
                     session_id=self.session_id,
-                    request_url=self.xsrf_token,
-                    request_body=self.refresh_token,
                     proxy=proxy_url or None,
                 )
             else:
@@ -336,10 +334,11 @@ class AccountPool:
             acct.state = "error"
             acct.last_error = "Wenxin account is missing login cookies"
         if acct.provider == PROVIDER_DOUBAO and (
-            not acct.cookies or not doubao_cookie_value(acct.cookies, "sessionid")
+            not acct.cookies
+            or not doubao_cookie_value(acct.cookies, "sessionid")
         ):
             acct.state = "error"
-            acct.last_error = "Doubao account is missing sessionid cookies"
+            acct.last_error = "Doubao account is missing sessionid cookie"
         if acct.proxy_id:
             proxy_entry = get_proxy_pool().get_by_id(acct.proxy_id)
             if proxy_entry is None or not proxy_entry.enabled:
@@ -531,10 +530,9 @@ class AccountPool:
             not cookies or not wenxin_cookie_value(cookies, "BDUSS")
         ):
             raise ValueError("Wenxin 账号需要包含 BDUSS 的登录 Cookie")
-        if provider == PROVIDER_DOUBAO and (
-            not cookies or not doubao_cookie_value(cookies, "sessionid")
-        ):
-            raise ValueError("Doubao 账号需要包含 sessionid 的登录 Cookie")
+        if provider == PROVIDER_DOUBAO:
+            if not cookies or not doubao_cookie_value(cookies, "sessionid"):
+                raise ValueError("Doubao 账号需要包含 sessionid 的登录 Cookie")
 
         with self._lock:
             fp = _credential_fingerprint(
@@ -750,11 +748,11 @@ class AccountPool:
                 or not wenxin_cookie_value(new_cookies, "BDUSS")
             ):
                 raise ValueError("Wenxin 账号需要包含 BDUSS 的登录 Cookie")
-            if new_provider == PROVIDER_DOUBAO and (
-                not new_cookies
-                or not doubao_cookie_value(new_cookies, "sessionid")
-            ):
-                raise ValueError("Doubao 账号需要包含 sessionid 的登录 Cookie")
+            if new_provider == PROVIDER_DOUBAO:
+                if not new_cookies or not doubao_cookie_value(
+                    new_cookies, "sessionid"
+                ):
+                    raise ValueError("Doubao 账号需要包含 sessionid 的登录 Cookie")
 
             new_fp = _credential_fingerprint(
                 new_token,

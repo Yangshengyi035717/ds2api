@@ -26,7 +26,7 @@
 - **Multi-provider pool** — separate DeepSeek, z.ai, Kimi, Qianwen, Hunyuan, Wenxin, and Doubao accounts with model-based routing.
 - **Hunyuan web compatibility** — AI Studio `hy4-preview` SSE protocol, cookie accounts, and keepalive.
 - **Wenxin web compatibility** — chat.baidu.com `smartMode` SSE, HAR credential import, and keepalive.
-- **Doubao web compatibility** — doubao.com `chat/completion` SSE with cookie and signed request-template import.
+- **Doubao web compatibility** — doubao.com `chat/completion` SSE with login-cookie accounts.
 - **Proxy pool** — one proxy per account, egress binding, connectivity checks, and encrypted storage.
 - **Sub2API upstream support** — rich model catalogue, provider manifest, pricing/multiplier settings, and a sync script.
 - **Client rate limiting** — sliding window, counted independently per API key and IP; response header `X-RateLimit-*`.
