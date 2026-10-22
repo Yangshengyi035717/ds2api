@@ -36,6 +36,8 @@ const MODEL_LABELS: Record<string, string> = {
   'kimi-k2.6': 'Kimi K2.6 · kimi',
   'kimi-k3': 'Kimi K3 · kimi',
   'kimi-k2.8': 'Kimi K2.8 · kimi',
+  'qwen3.7-max': 'Qwen3.7 Max · qianwen',
+  'hunyuan-hy4-preview': 'Hunyuan HY4 Preview · hunyuan',
   'deepseek-reasoner': 'DeepSeek Reasoner（旧别名）',
 }
 

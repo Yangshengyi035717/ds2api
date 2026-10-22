@@ -73,6 +73,12 @@ _UUID_RE = re.compile(
 
 def parse_credential_payload(payload: str | dict | list) -> ImportedCredentials:
     """Parse either a DevTools HAR or the browser console export JSON."""
+    if isinstance(payload, str):
+        text = payload.strip()
+        if text.lower().startswith("cookie:"):
+            text = text.split(":", 1)[1].strip()
+        if "hunyuan_token=" in text and "hunyuan_user=" in text:
+            return _from_hunyuan_cookie_string(text)
     data = _coerce_json(payload)
     if isinstance(data, dict):
         log = data.get("log")
@@ -138,9 +144,6 @@ def _from_browser_export(data: dict) -> ImportedCredentials:
         "auth_token",
     )
     token = _normalize_token(token)
-    if not token:
-        raise CredentialImportError("浏览器导出内容中没有 token")
-
     cookies = _coerce_cookies(
         _first_value(data, "cookies", "cookie", "cookie_header")
     )
@@ -152,6 +155,12 @@ def _from_browser_export(data: dict) -> ImportedCredentials:
         "refreshToken",
     )
     provider = _first_string(data, "provider", "account_type")
+    if str(provider).strip().lower() in {"hunyuan", "tencent", "aistudio"}:
+        token = token or _cookie_value(cookies, "hunyuan_token")
+        user_id = user_id or _cookie_value(cookies, "hunyuan_user")
+        provider = "hunyuan"
+    if not token:
+        raise CredentialImportError("浏览器导出内容中没有 token")
     warnings: list[str] = []
     if not cookies:
         warnings.append("未提供 Cookies；服务端会在首次请求时自动获取 WAF Cookie。")
@@ -174,6 +183,12 @@ def _from_browser_export(data: dict) -> ImportedCredentials:
 
 def _from_har(har: dict) -> ImportedCredentials:
     entries = har["log"]["entries"]
+    if any(
+        isinstance(entry, dict)
+        and "hunyuan.tencent.com" in str((entry.get("request") or {}).get("url") or "")
+        for entry in entries
+    ):
+        return _from_hunyuan_har(entries)
     cookies: dict[str, str] = {}
     device_id = ""
     token = ""
@@ -235,6 +250,69 @@ def _from_har(har: dict) -> ImportedCredentials:
         device_id=_normalize_device_id(device_id),
         source=f"har:{token_source}",
         warnings=warnings,
+    )
+
+
+def _from_hunyuan_cookie_string(cookies: str) -> ImportedCredentials:
+    normalized = _coerce_cookies(cookies)
+    token = _cookie_value(normalized, "hunyuan_token")
+    user_id = _cookie_value(normalized, "hunyuan_user")
+    if not token or not user_id:
+        raise CredentialImportError(
+            "Hunyuan Cookie 必须同时包含 hunyuan_token 和 hunyuan_user"
+        )
+    return ImportedCredentials(
+        token=token,
+        cookies=normalized,
+        user_id=user_id,
+        provider="hunyuan",
+        source="hunyuan-cookie",
+        warnings=["Hunyuan 登录 Cookie 为 HttpOnly，退出登录后需要重新导入。"],
+    )
+
+
+def _from_hunyuan_har(entries: list[Any]) -> ImportedCredentials:
+    cookies: dict[str, str] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        request = entry.get("request") or {}
+        response = entry.get("response") or {}
+        req_headers = _header_map(request.get("headers"))
+        cookie_header = req_headers.get("cookie")
+        if cookie_header:
+            _merge_cookie_header(cookies, cookie_header)
+        for _, value in _header_pairs(response.get("headers")):
+            if "hunyuan_token=" in value or "hunyuan_user=" in value:
+                _merge_set_cookie(cookies, value)
+        for item in request.get("cookies") or []:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            if name:
+                cookies[name] = str(item.get("value") or "").strip()
+        for item in response.get("cookies") or []:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            if name:
+                cookies[name] = str(item.get("value") or "").strip()
+
+    normalized = _serialize_cookies(cookies)
+    token = _cookie_value(normalized, "hunyuan_token")
+    user_id = _cookie_value(normalized, "hunyuan_user")
+    if not token or not user_id:
+        raise CredentialImportError(
+            "HAR 中没有可用的 Hunyuan Cookie。请在 DevTools 的 "
+            "api.hunyuan.tencent.com 请求中复制完整 Cookie 请求头。"
+        )
+    return ImportedCredentials(
+        token=token,
+        cookies=normalized,
+        user_id=user_id,
+        provider="hunyuan",
+        source="har:hunyuan-cookie",
+        warnings=["Hunyuan 登录 Cookie 为 HttpOnly，退出登录后需要重新导入。"],
     )
 
 
@@ -405,6 +483,12 @@ def _merge_set_cookie(target: dict[str, str], header: str) -> None:
 
 def _serialize_cookies(cookies: dict[str, str]) -> str:
     return "; ".join(f"{name}={value}" for name, value in cookies.items())
+
+
+def _cookie_value(cookies: str, name: str) -> str:
+    parsed: dict[str, str] = {}
+    _merge_cookie_header(parsed, cookies)
+    return parsed.get(name, "").strip()
 
 
 def _cookie_names(cookies: str) -> list[str]:

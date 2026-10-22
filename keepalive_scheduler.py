@@ -22,6 +22,7 @@ from keepalive_store import (
 )
 from logger import get_logger
 from provider_registry import (
+    PROVIDER_HUNYUAN,
     PROVIDER_KIMI,
     PROVIDER_QWEN,
     PROVIDER_ZAI,
@@ -84,6 +85,9 @@ class KeepaliveScheduler:
             ),
             PROVIDER_QWEN: threading.BoundedSemaphore(
                 max(1, _env_int("KEEPALIVE_QWEN_CONCURRENCY", 2))
+            ),
+            PROVIDER_HUNYUAN: threading.BoundedSemaphore(
+                max(1, _env_int("KEEPALIVE_HUNYUAN_CONCURRENCY", 2))
             ),
         }
 
@@ -276,7 +280,7 @@ class KeepaliveScheduler:
         provider: str,
     ) -> tuple[keepalive.ProbeResult, str, str, str, str]:
         token = keepalive._normalize_token(acct.token)
-        if not token and provider != PROVIDER_QWEN:
+        if not token and provider not in {PROVIDER_QWEN, PROVIDER_HUNYUAN}:
             code = 401 if provider == PROVIDER_ZAI else 40003
             return (
                 keepalive.ProbeResult(0, False, code, "no token"),
@@ -355,6 +359,35 @@ class KeepaliveScheduler:
                     keepalive.ProbeResult(401, False, 401, str(exc)),
                     acct.cookies,
                     device_id,
+                    acct.token,
+                    acct.refresh_token,
+                )
+        if provider == PROVIDER_HUNYUAN:
+            from hunyuan_adapter import HunyuanAdapter, HunyuanAuthError
+
+            try:
+                adapter = HunyuanAdapter(
+                    token=acct.token,
+                    cookies=acct.cookies,
+                    user_id=acct.user_id,
+                    device_id=acct.device_id,
+                    session_id=acct.session_id,
+                    topic_id=acct.topic_id,
+                    proxy=proxy_url or None,
+                )
+                adapter.check_health()
+                return (
+                    keepalive.ProbeResult(200, True, 0, ""),
+                    acct.cookies,
+                    acct.device_id,
+                    acct.token,
+                    acct.refresh_token,
+                )
+            except HunyuanAuthError as exc:
+                return (
+                    keepalive.ProbeResult(401, False, 401, str(exc)),
+                    acct.cookies,
+                    acct.device_id,
                     acct.token,
                     acct.refresh_token,
                 )

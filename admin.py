@@ -30,6 +30,8 @@ from proxy_pool import get_proxy_pool
 from provider_registry import (
     PROVIDER_DEEPSEEK,
     normalize_provider,
+    hunyuan_model_name,
+    hunyuan_upstream_model_name,
     kimi_model_name,
     kimi_upstream_model_name,
     zai_upstream_model_name,
@@ -685,6 +687,8 @@ async def env_info(request: Request):
         "zai_upstream_model": zai_upstream_model_name(),
         "kimi_model_name": kimi_model_name(),
         "kimi_upstream_model": kimi_upstream_model_name(),
+        "hunyuan_model_name": hunyuan_model_name(),
+        "hunyuan_upstream_model": hunyuan_upstream_model_name(),
         "model_name_source": runtime_snapshot["source"],
         "model_routes_configured": bool(os.environ.get("MODEL_ROUTES", "").strip()),
         "rate_limit": {
@@ -717,6 +721,8 @@ async def env_info(request: Request):
             {"name": "ZAI_UPSTREAM_MODEL", "value": zai_upstream_model_name(), "is_default": _flag("ZAI_UPSTREAM_MODEL") == "default"},
             {"name": "KIMI_MODEL_NAME", "value": kimi_model_name(), "is_default": _flag("KIMI_MODEL_NAME") == "default"},
             {"name": "KIMI_UPSTREAM_MODEL", "value": kimi_upstream_model_name(), "is_default": _flag("KIMI_UPSTREAM_MODEL") == "default"},
+            {"name": "HUNYUAN_MODEL_NAME", "value": hunyuan_model_name(), "is_default": _flag("HUNYUAN_MODEL_NAME") == "default"},
+            {"name": "HUNYUAN_UPSTREAM_MODEL", "value": hunyuan_upstream_model_name(), "is_default": _flag("HUNYUAN_UPSTREAM_MODEL") == "default"},
             {
                 "name": "DEEPSEEK_ADMIN_PASSWORD",
                 "value": "***" if password_state["set"] else "",

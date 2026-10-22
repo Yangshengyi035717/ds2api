@@ -206,6 +206,8 @@ export default function ApiDocsPage() {
     ?? 'glm-5.3-flash'
   const kimiModel = models.find((model) => model.provider === 'kimi')?.id
     ?? 'kimi-k2.6'
+  const hunyuanModel = models.find((model) => model.provider === 'hunyuan')?.id
+    ?? 'hunyuan-hy4-preview'
 
   return (
     <div className="mx-auto max-w-[1180px] space-y-4 animate-fade-in">
@@ -296,13 +298,14 @@ export default function ApiDocsPage() {
           </Card>
 
           <Tabs defaultValue="quick">
-            <TabsList className="grid h-auto w-full grid-cols-2 sm:grid-cols-3 lg:grid-cols-8">
+            <TabsList className="grid h-auto w-full grid-cols-2 sm:grid-cols-3 lg:grid-cols-9">
               <TabsTrigger value="quick">快速开始</TabsTrigger>
               <TabsTrigger value="openai">OpenAI</TabsTrigger>
               <TabsTrigger value="responses">Responses</TabsTrigger>
               <TabsTrigger value="anthropic">Anthropic</TabsTrigger>
               <TabsTrigger value="zai">z.ai</TabsTrigger>
               <TabsTrigger value="kimi">Kimi</TabsTrigger>
+              <TabsTrigger value="hunyuan">混元</TabsTrigger>
               <TabsTrigger value="sub2api">Sub2API</TabsTrigger>
               <TabsTrigger value="errors">错误与限制</TabsTrigger>
             </TabsList>
@@ -500,6 +503,39 @@ export default function ApiDocsPage() {
                     <FieldRow name="默认上游模型" description="kimi-k2.6 → k2d6-chat；可选 kimi-k3 / kimi-k2.8。" />
                     <FieldRow name="认证" description="access_token 约 15 分钟有效，服务端使用 refresh_token 自动续期。" />
                     <FieldRow name="协议" description="application/connect+json，按 Connect 帧解析 thinking/answer/done 事件。" />
+                  </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="hunyuan" className="space-y-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">腾讯混元 / Hunyuan HY4 Preview</CardTitle>
+                  <CardDescription>
+                    混元使用 AI Studio Web SSE 协议；服务端会创建上游会话并转换为统一的
+                    OpenAI / Anthropic 流式响应。
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <MethodPath method="POST" path="/v1/chat/completions" />
+                  <CodeBlock
+                    code={openAiRequest(hunyuanModel)}
+                    title="OpenAI Chat Completions"
+                    language="json"
+                  />
+                  <CodeBlock
+                    code={openAiStream(hunyuanModel)}
+                    title="流式 cURL"
+                    language="bash"
+                  />
+                  <div>
+                    <FieldRow name="公开模型名" description={`${hunyuanModel}；请求自动路由到 provider=hunyuan 账号。`} />
+                    <FieldRow name="默认上游模型" description="hunyuan-hy4-preview → hy4-preview；由 HUNYUAN_UPSTREAM_MODEL 控制。" />
+                    <FieldRow name="认证" description="需要包含 hunyuan_user 和 hunyuan_token 的 HttpOnly Cookie；退出登录后需重新导入。" />
+                    <FieldRow name="协议" description="text/event-stream；解析 speech_type、text、meta 与 error 事件。" />
+                    <FieldRow name="thinking_mode" description="映射 effort=high / no_think。" />
+                    <FieldRow name="search_enabled" description="映射 supportInternetSearch。" />
                   </div>
                 </CardContent>
               </Card>

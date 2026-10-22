@@ -78,7 +78,8 @@ export function AccountTable({
                         variant={
                           a.provider === 'zai' ||
                           a.provider === 'kimi' ||
-                          a.provider === 'qianwen'
+                          a.provider === 'qianwen' ||
+                          a.provider === 'hunyuan'
                             ? 'outline'
                             : 'secondary'
                         }

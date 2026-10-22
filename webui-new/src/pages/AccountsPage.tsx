@@ -50,7 +50,7 @@ export default function AccountsPage() {
   const [editing, setEditing] = useState<Account | null>(null)
   const [viewing, setViewing] = useState<Account | null>(null)
   const [deleting, setDeleting] = useState<Account | null>(null)
-  const [providerFilter, setProviderFilter] = useState<'all' | 'deepseek' | 'zai' | 'kimi' | 'qianwen'>('all')
+  const [providerFilter, setProviderFilter] = useState<'all' | 'deepseek' | 'zai' | 'kimi' | 'qianwen' | 'hunyuan'>('all')
   const [keepaliveBusy, setKeepaliveBusy] = useState(false)
 
   const allAccounts = data?.accounts ?? []
@@ -63,6 +63,7 @@ export default function AccountsPage() {
     zai: allAccounts.filter((account) => account.provider === 'zai').length,
     kimi: allAccounts.filter((account) => account.provider === 'kimi').length,
     qianwen: allAccounts.filter((account) => account.provider === 'qianwen').length,
+    hunyuan: allAccounts.filter((account) => account.provider === 'hunyuan').length,
   }
   const keepaliveJobs = Object.fromEntries(
     (keepaliveData?.jobs ?? []).map((job) => [job.account_id, job]),
@@ -136,7 +137,7 @@ export default function AccountsPage() {
     <div className="space-y-6 animate-fade-in">
       <PageHeader
         title="账号池"
-        description={`按提供商管理账号 · DeepSeek ${providerCounts.deepseek} · z.ai ${providerCounts.zai} · Kimi ${providerCounts.kimi} · 千问 ${providerCounts.qianwen}`}
+        description={`按提供商管理账号 · DeepSeek ${providerCounts.deepseek} · z.ai ${providerCounts.zai} · Kimi ${providerCounts.kimi} · 千问 ${providerCounts.qianwen} · 混元 ${providerCounts.hunyuan}`}
         actions={
           <>
             <Button variant="outline" onClick={refresh} disabled={loading}>
@@ -153,14 +154,15 @@ export default function AccountsPage() {
 
       <Tabs
         value={providerFilter}
-        onValueChange={(value) => setProviderFilter(value as 'all' | 'deepseek' | 'zai' | 'kimi' | 'qianwen')}
+        onValueChange={(value) => setProviderFilter(value as 'all' | 'deepseek' | 'zai' | 'kimi' | 'qianwen' | 'hunyuan')}
       >
-        <TabsList className="grid w-full grid-cols-5">
+        <TabsList className="grid w-full grid-cols-6">
           <TabsTrigger value="all">全部 {providerCounts.all}</TabsTrigger>
           <TabsTrigger value="deepseek">DeepSeek {providerCounts.deepseek}</TabsTrigger>
           <TabsTrigger value="zai">z.ai {providerCounts.zai}</TabsTrigger>
           <TabsTrigger value="kimi">Kimi {providerCounts.kimi}</TabsTrigger>
           <TabsTrigger value="qianwen">千问 {providerCounts.qianwen}</TabsTrigger>
+          <TabsTrigger value="hunyuan">混元 {providerCounts.hunyuan}</TabsTrigger>
         </TabsList>
       </Tabs>
 
@@ -215,10 +217,11 @@ export default function AccountsPage() {
             </DialogDescription>
           </DialogHeader>
           <Tabs defaultValue="import">
-            <TabsList className="grid w-full grid-cols-4">
+            <TabsList className="grid w-full grid-cols-5">
               <TabsTrigger value="import">DeepSeek 导入</TabsTrigger>
               <TabsTrigger value="zai">z.ai 导入</TabsTrigger>
               <TabsTrigger value="kimi">Kimi 导入</TabsTrigger>
+              <TabsTrigger value="hunyuan">混元导入</TabsTrigger>
               <TabsTrigger value="manual">手动添加</TabsTrigger>
             </TabsList>
             <TabsContent value="import">
@@ -241,6 +244,15 @@ export default function AccountsPage() {
             <TabsContent value="kimi">
               <CredentialImportPanel
                 provider="kimi"
+                onImported={() => {
+                  setAddOpen(false)
+                  refreshAll()
+                }}
+              />
+            </TabsContent>
+            <TabsContent value="hunyuan">
+              <CredentialImportPanel
+                provider="hunyuan"
                 onImported={() => {
                   setAddOpen(false)
                   refreshAll()

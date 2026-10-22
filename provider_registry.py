@@ -7,11 +7,13 @@ PROVIDER_DEEPSEEK = "deepseek"
 PROVIDER_ZAI = "zai"
 PROVIDER_KIMI = "kimi"
 PROVIDER_QWEN = "qianwen"
+PROVIDER_HUNYUAN = "hunyuan"
 SUPPORTED_PROVIDERS = (
     PROVIDER_DEEPSEEK,
     PROVIDER_ZAI,
     PROVIDER_KIMI,
     PROVIDER_QWEN,
+    PROVIDER_HUNYUAN,
 )
 
 PROVIDER_LABELS = {
@@ -19,6 +21,7 @@ PROVIDER_LABELS = {
     PROVIDER_ZAI: "z.ai",
     PROVIDER_KIMI: "Kimi",
     PROVIDER_QWEN: "千问",
+    PROVIDER_HUNYUAN: "混元",
 }
 
 _PROVIDER_ALIASES = {
@@ -34,6 +37,10 @@ _PROVIDER_ALIASES = {
     "qianwen": PROVIDER_QWEN,
     "qwen": PROVIDER_QWEN,
     "tongyi": PROVIDER_QWEN,
+    "hunyuan": PROVIDER_HUNYUAN,
+    "tencent": PROVIDER_HUNYUAN,
+    "tencent-hunyuan": PROVIDER_HUNYUAN,
+    "aistudio": PROVIDER_HUNYUAN,
 }
 
 _ZAI_MODEL_ALIASES = {
@@ -101,6 +108,13 @@ def provider_for_model(model: str | None) -> str:
         or name == qwen_upstream_model_name().lower()
     ):
         return PROVIDER_QWEN
+    if (
+        name.startswith("hunyuan")
+        or name in {"hy4-preview", "tencent", "tencent-hunyuan", "aistudio"}
+        or name == hunyuan_model_name().lower()
+        or name == hunyuan_upstream_model_name().lower()
+    ):
+        return PROVIDER_HUNYUAN
     return PROVIDER_DEEPSEEK
 
 
@@ -180,6 +194,46 @@ def qwen_public_model(model: str | None) -> str:
     if not requested or requested.lower() in {"qwen", "qianwen", "tongyi"}:
         return qwen_model_name()
     return requested
+
+
+def hunyuan_model_name() -> str:
+    return (
+        os.environ.get("HUNYUAN_MODEL_NAME", "hunyuan-hy4-preview").strip()
+        or "hunyuan-hy4-preview"
+    )
+
+
+def hunyuan_upstream_model_name() -> str:
+    return (
+        os.environ.get("HUNYUAN_UPSTREAM_MODEL", "hy4-preview").strip()
+        or "hy4-preview"
+    )
+
+
+def hunyuan_public_model(model: str | None) -> str:
+    requested = str(model or "").strip()
+    if not requested or requested.lower() in {
+        "hunyuan",
+        "tencent",
+        "tencent-hunyuan",
+        "aistudio",
+    }:
+        return hunyuan_model_name()
+    return requested
+
+
+def hunyuan_upstream_model(model: str | None) -> str:
+    requested = hunyuan_public_model(model)
+    aliases = {
+        hunyuan_model_name().lower(): hunyuan_upstream_model_name(),
+        "hunyuan-hy4-preview": "hy4-preview",
+        "hy4-preview": "hy4-preview",
+    }
+    return aliases.get(requested.lower(), requested)
+
+
+def available_hunyuan_models() -> list[str]:
+    return [hunyuan_model_name()]
 
 
 def available_models(deepseek_model: str) -> list[str]:

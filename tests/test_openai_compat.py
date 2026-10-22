@@ -47,6 +47,7 @@ def test_models_expose_sub2api_metadata(compat_client):
         "kimi-k3",
         "kimi-k2.8",
         "qwen3.7-max",
+        "hunyuan-hy4-preview",
     }
     deepseek = next(model for model in body["data"] if model["id"] == "deepseek-chat")
     zai = next(model for model in body["data"] if model["id"] == "glm-5.3-flash")
@@ -69,6 +70,11 @@ def test_models_expose_sub2api_metadata(compat_client):
     qwen = next(model for model in body["data"] if model["id"] == "qwen3.7-max")
     assert qwen["provider"] == "qianwen"
     assert qwen["display_name"] == "Qwen3.7 Max"
+    hunyuan = next(
+        model for model in body["data"] if model["id"] == "hunyuan-hy4-preview"
+    )
+    assert hunyuan["provider"] == "hunyuan"
+    assert hunyuan["display_name"] == "Hunyuan HY4 Preview"
 
 
 def test_single_model_lookup_and_openai_404(compat_client):
@@ -89,6 +95,10 @@ def test_single_model_lookup_and_openai_404(compat_client):
     qwen = client.get("/v1/models/qwen3.7-max", headers=_auth(key))
     assert qwen.status_code == 200
     assert qwen.json()["provider"] == "qianwen"
+
+    hunyuan = client.get("/v1/models/hunyuan-hy4-preview", headers=_auth(key))
+    assert hunyuan.status_code == 200
+    assert hunyuan.json()["provider"] == "hunyuan"
 
     missing = client.get("/v1/models/not-a-model", headers=_auth(key))
     assert missing.status_code == 404
@@ -140,6 +150,7 @@ def test_provider_manifest_is_authenticated_and_descriptive(compat_client):
         "zai",
         "kimi",
         "qianwen",
+        "hunyuan",
     }
     assert body["pricing"]["automatic"] is False
 
@@ -281,6 +292,46 @@ def test_glm_request_routes_to_zai_provider(compat_client, monkeypatch):
     assert captured["provider"] == "zai"
     assert captured["model_name"] == "glm-5.3-flash"
     assert captured["upstream_model"] == "x-preview-l"
+
+
+def test_hunyuan_request_routes_to_hunyuan_provider(compat_client, monkeypatch):
+    client, key, _ = compat_client
+    captured = {}
+
+    def fake_nonstream(*args, **kwargs):
+        captured.update(kwargs)
+        return {
+            "id": "chatcmpl-hunyuan",
+            "object": "chat.completion",
+            "model": kwargs["model_name"],
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "hunyuan response"},
+                "finish_reason": "stop",
+            }],
+            "usage": {
+                "prompt_tokens": 1,
+                "completion_tokens": 1,
+                "total_tokens": 2,
+            },
+        }
+
+    monkeypatch.setattr(server, "_handle_nonstream", fake_nonstream)
+
+    response = client.post(
+        "/v1/chat/completions",
+        headers=_auth(key),
+        json={
+            "model": "hunyuan-hy4-preview",
+            "messages": [{"role": "user", "content": "hello"}],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["model"] == "hunyuan-hy4-preview"
+    assert captured["provider"] == "hunyuan"
+    assert captured["model_name"] == "hunyuan-hy4-preview"
+    assert captured["upstream_model"] == "hy4-preview"
 
 
 def test_responses_stream_translation(compat_client, monkeypatch):

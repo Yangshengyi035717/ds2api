@@ -21,8 +21,14 @@ from adapter import DeepSeekAdapter
 from zai_adapter import ZaiAdapter, zai_user_id_from_token
 from kimi_adapter import KimiAdapter, kimi_device_id_from_token, kimi_user_id_from_token
 from qwen_adapter import QwenAdapter
+from hunyuan_adapter import (
+    HunyuanAdapter,
+    hunyuan_token_from_cookies,
+    hunyuan_user_id_from_cookies,
+)
 from provider_registry import (
     PROVIDER_DEEPSEEK,
+    PROVIDER_HUNYUAN,
     PROVIDER_KIMI,
     PROVIDER_QWEN,
     PROVIDER_ZAI,
@@ -129,13 +135,14 @@ class Account:
     error_count: int = 0
     last_error: str = ""
     last_used: float = 0.0
-    _adapter: Optional[DeepSeekAdapter | ZaiAdapter | KimiAdapter | QwenAdapter] = field(
-        default=None,
-        repr=False,
-    )
+    _adapter: Optional[
+        DeepSeekAdapter | ZaiAdapter | KimiAdapter | QwenAdapter | HunyuanAdapter
+    ] = field(default=None, repr=False)
 
     @property
-    def adapter(self) -> DeepSeekAdapter | ZaiAdapter | KimiAdapter | QwenAdapter:
+    def adapter(
+        self,
+    ) -> DeepSeekAdapter | ZaiAdapter | KimiAdapter | QwenAdapter | HunyuanAdapter:
         if self._adapter is None:
             proxy_url = self.proxy.strip()
             if not proxy_url and self.proxy_id:
@@ -166,6 +173,16 @@ class Account:
                     device_id=self.device_id,
                     user_id=self.user_id,
                     xsrf_token=self.xsrf_token,
+                    session_id=self.session_id,
+                    topic_id=self.topic_id,
+                    proxy=proxy_url or None,
+                )
+            elif self.provider == PROVIDER_HUNYUAN:
+                self._adapter = HunyuanAdapter(
+                    token=self.token,
+                    cookies=self.cookies,
+                    user_id=self.user_id,
+                    device_id=self.device_id,
                     session_id=self.session_id,
                     topic_id=self.topic_id,
                     proxy=proxy_url or None,
@@ -273,6 +290,11 @@ class AccountPool:
         ):
             acct.state = "error"
             acct.last_error = "Qianwen account is missing cookies/session_id"
+        if acct.provider == PROVIDER_HUNYUAN and (
+            not acct.cookies or not acct.token or not acct.user_id
+        ):
+            acct.state = "error"
+            acct.last_error = "Hunyuan account is missing cookies/user"
         if acct.proxy_id:
             proxy_entry = get_proxy_pool().get_by_id(acct.proxy_id)
             if proxy_entry is None or not proxy_entry.enabled:
@@ -316,7 +338,10 @@ class AccountPool:
             token = str(item.get("token") or "").strip()
             cookies = str(item.get("cookies") or "").strip()
             loaded_provider = _safe_provider(item.get("provider"))
-            if not token and loaded_provider != PROVIDER_QWEN:
+            if not token and loaded_provider not in {
+                PROVIDER_QWEN,
+                PROVIDER_HUNYUAN,
+            }:
                 log.warning("skipping_account_missing_credentials", extra={"id": item.get("id")})
                 continue
             created_at = int(item.get("created_at") or _now())
@@ -347,6 +372,15 @@ class AccountPool:
                 account_value.device_id = (
                     account_value.device_id
                     or kimi_device_id_from_token(account_value.token)
+                )
+            if account_value.provider == PROVIDER_HUNYUAN:
+                account_value.token = (
+                    account_value.token
+                    or hunyuan_token_from_cookies(account_value.cookies)
+                )
+                account_value.user_id = (
+                    account_value.user_id
+                    or hunyuan_user_id_from_cookies(account_value.cookies)
                 )
             self._append_loaded(account_value)
 
@@ -415,7 +449,10 @@ class AccountPool:
         if provider == PROVIDER_KIMI:
             user_id = user_id or kimi_user_id_from_token(token)
             device_id = device_id or kimi_device_id_from_token(token)
-        if not token and provider != PROVIDER_QWEN:
+        if provider == PROVIDER_HUNYUAN:
+            token = token or hunyuan_token_from_cookies(cookies)
+            user_id = user_id or hunyuan_user_id_from_cookies(cookies)
+        if not token and provider not in {PROVIDER_QWEN, PROVIDER_HUNYUAN}:
             raise ValueError("Token is required")
         if provider == PROVIDER_ZAI and not user_id:
             raise ValueError("z.ai 账号需要 User ID")
@@ -423,6 +460,12 @@ class AccountPool:
             raise ValueError("Kimi 账号需要 refresh_token")
         if provider == PROVIDER_QWEN and (not cookies or not session_id):
             raise ValueError("千问账号需要 cookies 和 session_id")
+        if provider == PROVIDER_HUNYUAN and (
+            not cookies or not token or not user_id
+        ):
+            raise ValueError(
+                "Hunyuan 账号需要包含 hunyuan_token 和 hunyuan_user 的 cookies"
+            )
 
         with self._lock:
             fp = _credential_fingerprint(
@@ -596,15 +639,31 @@ class AccountPool:
                 new_device_id = (
                     new_device_id or kimi_device_id_from_token(new_token)
                 )
+            if new_provider == PROVIDER_HUNYUAN:
+                new_token = (
+                    new_token or hunyuan_token_from_cookies(new_cookies)
+                )
+                new_user_id = (
+                    new_user_id or hunyuan_user_id_from_cookies(new_cookies)
+                )
             new_proxy_id = (
                 acct.proxy_id
                 if proxy_id is None
                 else self._validate_proxy_binding_locked(proxy_id, ignore_account_id=account_id)
             )
-            if not new_token and new_provider != PROVIDER_QWEN:
+            if not new_token and new_provider not in {
+                PROVIDER_QWEN,
+                PROVIDER_HUNYUAN,
+            }:
                 raise ValueError("Token cannot be empty")
             if new_provider == PROVIDER_ZAI and not new_user_id:
                 raise ValueError("z.ai 账号需要 User ID")
+            if new_provider == PROVIDER_HUNYUAN and (
+                not new_cookies or not new_token or not new_user_id
+            ):
+                raise ValueError(
+                    "Hunyuan 账号需要包含 hunyuan_token 和 hunyuan_user 的 cookies"
+                )
 
             new_fp = _credential_fingerprint(
                 new_token,

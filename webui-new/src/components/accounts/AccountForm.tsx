@@ -64,6 +64,7 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
     const effectiveUserId = userId.trim() || zaiUserIdFromToken(token)
     const isKimi = provider === 'kimi'
     const isQwen = provider === 'qianwen'
+    const isHunyuan = provider === 'hunyuan'
     const effectiveRefreshToken = refreshToken.trim()
     if (provider === 'zai' && !effectiveUserId && !(isEdit && account?.has_user_id)) {
       toast({ title: 'z.ai 账号需要 User ID', variant: 'destructive' })
@@ -71,6 +72,18 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
     }
     if (isQwen && (!cookies.trim() || !sessionId.trim())) {
       toast({ title: '千问账号需要 Cookies 和 Session ID', variant: 'destructive' })
+      return
+    }
+    if (
+      isHunyuan
+      && !cookies.trim()
+      && !(
+        isEdit
+        && account?.provider === 'hunyuan'
+        && account.cookies_preview
+      )
+    ) {
+      toast({ title: '混元账号需要 Cookie', variant: 'destructive' })
       return
     }
     if (
@@ -103,7 +116,7 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
         const saved: Account = { ...account, email: email || account.email }
         onSaved(saved)
       } else {
-        if (!token && provider !== 'qianwen') {
+        if (!token && provider !== 'qianwen' && provider !== 'hunyuan') {
           toast({ title: 'Token 不能为空', variant: 'destructive' })
           setBusy(false)
           return
@@ -156,6 +169,7 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
             <SelectItem value="zai">z.ai</SelectItem>
             <SelectItem value="kimi">Kimi</SelectItem>
             <SelectItem value="qianwen">千问</SelectItem>
+            <SelectItem value="hunyuan">混元</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -229,17 +243,30 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
           </div>
         </div>
       )}
-      <div className="space-y-1.5">
-        <Label htmlFor="acct-token">Token</Label>
-        <Input
-          id="acct-token"
-          value={token}
-          onChange={(e) => setToken(e.target.value)}
-          placeholder={isEdit ? '留空则不修改 Token' : 'Authorization Bearer token（不要带 Bearer）'}
-          autoComplete="off"
-          className="font-mono text-xs"
-        />
-      </div>
+      {provider === 'hunyuan' && (
+        <div className="rounded-md border border-primary/20 bg-primary/5 p-3 text-xs leading-relaxed text-muted-foreground">
+          混元使用 Cookie 登录。请在已登录的{' '}
+          <code className="font-mono">aistudio.tencent.com</code>{' '}
+          DevTools → Network 中打开任意{' '}
+          <code className="font-mono">api.hunyuan.tencent.com</code>{' '}
+          请求，复制完整 Cookie 请求头。必须包含{' '}
+          <code className="font-mono">hunyuan_user</code> 和{' '}
+          <code className="font-mono">hunyuan_token</code>；Token 可留空，由服务端从 Cookie 提取。
+        </div>
+      )}
+      {provider !== 'hunyuan' && (
+        <div className="space-y-1.5">
+          <Label htmlFor="acct-token">Token</Label>
+          <Input
+            id="acct-token"
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+            placeholder={isEdit ? '留空则不修改 Token' : 'Authorization Bearer token（不要带 Bearer）'}
+            autoComplete="off"
+            className="font-mono text-xs"
+          />
+        </div>
+      )}
       <div className="space-y-1.5">
         <Label htmlFor="acct-cookies">Cookies</Label>
         <Input

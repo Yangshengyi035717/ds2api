@@ -10,6 +10,7 @@ from typing import Iterable
 
 from provider_registry import (
     PROVIDER_DEEPSEEK,
+    PROVIDER_HUNYUAN,
     PROVIDER_KIMI,
     PROVIDER_QWEN,
     PROVIDER_ZAI,
@@ -62,6 +63,9 @@ class KeepaliveJobStore:
         self.qwen_interval = _clamp_interval(
             _env_int("KEEPALIVE_QWEN_INTERVAL", 15 * 60)
         )
+        self.hunyuan_interval = _clamp_interval(
+            _env_int("KEEPALIVE_HUNYUAN_INTERVAL", 15 * 60)
+        )
         self.startup_jitter = max(0, _env_int("KEEPALIVE_STARTUP_JITTER", 60))
         self.lease_secs = max(30, _env_int("KEEPALIVE_LEASE_SECS", 120))
         self._initialize()
@@ -112,6 +116,8 @@ class KeepaliveJobStore:
             return self.kimi_interval
         if normalized == PROVIDER_QWEN:
             return self.qwen_interval
+        if normalized == PROVIDER_HUNYUAN:
+            return self.hunyuan_interval
         return self.deepseek_interval
 
     def sync_accounts(

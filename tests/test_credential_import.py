@@ -61,6 +61,50 @@ def test_zai_browser_export_preserves_provider_user_id_and_device_id():
     assert imported.public_summary()["user_id_preview"].startswith("263f39c")
 
 
+def test_hunyuan_raw_cookie_string_imports_http_only_identity():
+    imported = parse_credential_payload(
+        "hunyuan_source=web; "
+        "hunyuan_user=user-123; "
+        "hunyuan_token=token-456"
+    )
+
+    assert imported.provider == "hunyuan"
+    assert imported.user_id == "user-123"
+    assert imported.token == "token-456"
+    assert imported.source == "hunyuan-cookie"
+
+
+def test_hunyuan_har_extracts_cookie_request_header():
+    har = {
+        "log": {
+            "entries": [
+                {
+                    "request": {
+                        "url": "https://api.hunyuan.tencent.com/api/new-portal/chat/conversation/list",
+                        "headers": [
+                            {
+                                "name": "Cookie",
+                                "value": (
+                                    "hunyuan_source=web; "
+                                    "hunyuan_user=user-123; "
+                                    "hunyuan_token=token-456"
+                                ),
+                            }
+                        ],
+                    },
+                    "response": {"headers": [], "content": {}},
+                }
+            ]
+        }
+    }
+
+    imported = parse_credential_payload(har)
+    assert imported.provider == "hunyuan"
+    assert imported.user_id == "user-123"
+    assert imported.token == "token-456"
+    assert imported.source == "har:hunyuan-cookie"
+
+
 def test_har_extracts_token_cookies_and_device_id():
     har = {
         "log": {

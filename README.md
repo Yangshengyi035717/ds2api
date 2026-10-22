@@ -1,6 +1,6 @@
 # DeepSeek Chat API Proxy
 
-> 将 DeepSeek Chat (chat.deepseek.com) 与 z.ai Web Chat (zchat.z.ai) 的私有 API
+> 将 DeepSeek Chat、z.ai、Kimi、千问与腾讯混元 AI Studio 的 Web Chat 私有 API
 > 转换为统一的 OpenAI / Anthropic 兼容格式。
 
 > **🤖 全 AI 生成声明**: 本项目没有一行人工手写代码。所有的 API 端点设计、协议逆向、PoW 求解、SSE 解析、格式映射、文档编写等等全部由 **DeepSeek v4 Flash 模型** + **Claude Code** 协作完成。
@@ -24,8 +24,9 @@
 - **PoW 鉴权** — 自动完成 WASM 工作量证明（DeepSeekHashV1）挑战
 - **会话管理** — 自动创建和管理 DeepSeek Chat 会话；可选多轮会话复用
 - **多账号池** — 轮询分配、idle/busy/error 状态、健康检查、自动恢复
-- **多提供商账号池** — DeepSeek / z.ai 分类管理，按请求模型自动隔离路由
+- **多提供商账号池** — DeepSeek / z.ai / Kimi / 千问 / 混元分类管理，按请求模型自动隔离路由
 - **Kimi 兼容** — Connect JSON 流式协议与 access/refresh token 自动续期
+- **混元兼容** — AI Studio `hy4-preview` SSE 协议、Cookie 账号池与协议保活
 - **代理池** — 一号一代理、出口绑定、连通性检测与加密存储
 - **Sub2API 上游适配** — 富模型目录、Provider Manifest、价格/倍率配置和同步脚本
 - **客户端限流** — 滑动窗口，按 API key 和 IP 独立计数；响应头 `X-RateLimit-*`
@@ -98,6 +99,26 @@ kimi-k3    → k3-agent
 kimi-k2.8  → k28-agent-preview
 ```
 
+### 添加混元账号
+
+在 WebUI → 账号池 → 添加账号 → **混元导入** 中粘贴 Cookie 请求头或 HAR。
+混元登录使用 HttpOnly Cookie，页面 Console 无法读取完整登录态；请在已登录的
+`aistudio.tencent.com` 页面打开 DevTools → Network，选择任意
+`api.hunyuan.tencent.com` 请求并复制完整 Cookie：
+
+```text
+hunyuan_source=web; hunyuan_user=...; hunyuan_token=...
+```
+
+公开模型与上游映射：
+
+```text
+hunyuan-hy4-preview → hy4-preview
+```
+
+服务端在每次会话开始时调用 `POST /api/new-portal/generate/id` 创建会话，再通过
+`POST /api/new-portal/chat/{conversationId}` 获取 SSE 生成结果。
+
 ### 服务器浏览器登录（noVNC）
 
 如果不想手动导出，可启用 `browser-login` sidecar。WebUI 的「浏览器登录」
@@ -118,13 +139,14 @@ docker compose up -d --build
 `deepseek-device-id:chat` 和 Cookie，并调用内部 ingest 接口写入账号池。
 之后的保活仍由 `keepalive/` 负责。
 
-### 协议保活（DeepSeek / z.ai）
+### 协议保活（DeepSeek / z.ai / Kimi / 千问 / 混元）
 
 DS2API 内置多账号 `KeepaliveScheduler`，会为账号池中的每个账号创建独立
 Job，并按 `provider` 自动分流：
 
 - DeepSeek：周期调用 `GET /api/v0/users/current`
 - z.ai：周期调用 `GET /api/v1/chats/?page=1&type=all&channel=zai-web`
+- 混元：周期调用 `POST /api/new-portal/chat/conversation/list`
 
 探活只使用只读接口，不创建 chat、不发送 prompt，因此不消耗生成额度。
 上游轮换的 WAF / session Cookie 会自动执行 `PUT /admin/api/accounts/{id}`
@@ -141,7 +163,7 @@ KEEPALIVE_GLOBAL_CONCURRENCY=4
 
 Job、租约、下次执行时间、退避和待重登状态保存在
 `data/keepalive.sqlite3`。WebUI 账号池支持逐账号启停、立即检测，以及按
-DeepSeek / z.ai 批量启用、暂停和检测。
+各 Provider 批量启用、暂停和检测。
 
 `keepalive/` 下的单账号 Docker worker 保留为兼容模式。启用
 `KEEPALIVE_ENABLED=true` 后应停止旧的 `dsapi-keepalive` 容器，避免两个
