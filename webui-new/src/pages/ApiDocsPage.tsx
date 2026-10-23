@@ -218,7 +218,7 @@ export default function ApiDocsPage() {
     ?? 'mimo-v2.6-pro'
 
   return (
-    <div className="mx-auto max-w-[1180px] space-y-4 animate-fade-in">
+    <div className="w-full space-y-4 animate-fade-in">
       <PageHeader
         title="API 文档"
         description="OpenAI / Anthropic 兼容接口、客户端接入示例与内嵌在线调试"
@@ -236,7 +236,7 @@ export default function ApiDocsPage() {
           <TabsTrigger value="debug">在线调试</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="docs" className="space-y-4">
+        <TabsContent value="docs" className="mx-auto w-full max-w-[1180px] space-y-4">
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="flex items-center gap-2 text-base">
@@ -763,7 +763,7 @@ export default function ApiDocsPage() {
           </Tabs>
         </TabsContent>
 
-        <TabsContent value="debug" className="space-y-4">
+        <TabsContent value="debug" className="w-full space-y-4">
           <ApiDebugger defaultModel={modelName} />
         </TabsContent>
       </Tabs>
