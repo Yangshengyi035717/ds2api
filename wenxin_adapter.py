@@ -11,6 +11,8 @@ from typing import Any
 from urllib.parse import quote
 
 from curl_cffi import requests as cffi_requests
+from curl_cffi.requests.exceptions import RequestException
+from upstream_http import stream_timeout
 
 from adapter import RateLimitError, UpstreamHintError, UpstreamTransientError
 from provider_registry import wenxin_model_name, wenxin_upstream_model
@@ -348,6 +350,7 @@ class WenxinAdapter:
             headers=self._headers(prompt),
             json=self._body(prompt, thinking=thinking, search=search),
             stream=True,
+            timeout=stream_timeout(),
         )
         self._raise_response(response, "chat")
         return response
@@ -371,6 +374,7 @@ class WenxinAdapter:
         )
         answer_seen = False
         thinking_seen = False
+        done = False
         try:
             for event_name, payload in self._iter_sse(response):
                 event = self._parse_json(payload)
@@ -395,9 +399,15 @@ class WenxinAdapter:
                     raise UpstreamHintError(message or f"Wenxin status {status}")
                 data = event.get("data") or {}
                 message_obj = data.get("message") or {}
+                # A component finishing (e.g. reasoning) is not necessarily
+                # the end of the whole answer. Prefer message-level state.
+                state = (message_obj.get("metaData") or {}).get("state")
                 content = message_obj.get("content") or {}
                 generator = content.get("generator")
                 if not isinstance(generator, dict):
+                    if state == "generate-complete":
+                        done = True
+                        break
                     continue
                 data_obj = generator.get("data") or {}
                 value = data_obj.get("value")
@@ -421,8 +431,18 @@ class WenxinAdapter:
                         if isinstance(text, str) and text:
                             if "抱歉" in text or "错误" in text:
                                 raise UpstreamHintError(text)
+                if state == "generate-complete" or (
+                    not state and generator.get("component") == "markdown-yiyan"
+                    and generator.get("isFinished") is True
+                ):
+                    done = True
+                    break
             if not answer_seen and not thinking_seen:
                 raise UpstreamTransientError("Wenxin returned an empty stream")
+            if not done:
+                raise UpstreamTransientError("Wenxin stream ended before its generate-complete event")
+        except RequestException:
+            raise UpstreamTransientError("Wenxin stream was interrupted before completion") from None
         finally:
             response.close()
 

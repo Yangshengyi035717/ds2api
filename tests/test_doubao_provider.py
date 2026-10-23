@@ -102,6 +102,7 @@ def test_doubao_sse_preserves_text_before_chunk_delta():
         }]
     })
     lines += _sse("CHUNK_DELTA", {"text": "BAO_TEST_OK"})
+    lines += _sse("SSE_REPLY_END", {"end_type": 1})
     response = _Response(lines)
     adapter._open = lambda *_a, **_k: response
 
@@ -118,7 +119,7 @@ def test_doubao_sse_accepts_answer_in_initial_notification_only():
                 "content": {"text_block": {"text": "你好"}},
             }]
         }
-    }))
+    }) + _sse("SSE_REPLY_END", {"end_type": 1}))
     adapter._open = lambda *_a, **_k: response
 
     assert list(adapter.chat_stream("session", "hi")) == ["你好"]
@@ -137,6 +138,7 @@ def test_doubao_initial_thinking_text_stays_in_reasoning_channel():
         }
     })
     lines += _sse("CHUNK_DELTA", {"text": "回答"})
+    lines += _sse("SSE_REPLY_END", {"end_type": 1})
     response = _Response(lines)
     adapter._open = lambda *_a, **_k: response
 
@@ -169,6 +171,7 @@ def test_doubao_sse_maps_thinking_block_to_reasoning():
         }]
     })
     lines += _sse("CHUNK_DELTA", {"text": "回答"})
+    lines += _sse("SSE_REPLY_END", {"end_type": 1})
     response = _Response(lines)
     adapter._open = lambda *_a, **_k: response
 

@@ -8,6 +8,8 @@ import uuid
 from typing import Any
 
 from curl_cffi import requests as cffi_requests
+from curl_cffi.requests.exceptions import RequestException
+from upstream_http import stream_timeout
 
 from adapter import RateLimitError, UpstreamHintError, UpstreamTransientError
 from provider_registry import qwen_model_name, qwen_upstream_model
@@ -215,6 +217,7 @@ class QwenAdapter:
                 search=search,
             ),
             stream=True,
+            timeout=stream_timeout(),
         )
         self._raise(response, "chat")
         return response
@@ -240,29 +243,40 @@ class QwenAdapter:
         try:
             answer = ""
             thinking = ""
-            for event in self._iter_sse(response):
-                data = event.get("data") or {}
-                if not event.get("success", True):
-                    raise UpstreamHintError(str(event.get("error_msg") or "千问错误"))
-                for message in data.get("messages") or []:
-                    content = message.get("content")
-                    mime = str(message.get("mime_type") or "")
-                    if not isinstance(content, str) or not content:
-                        continue
-                    if "think" in mime.lower() or "reason" in mime.lower():
-                        delta = content[len(thinking):] if content.startswith(thinking) else content
-                        thinking = content
-                        if delta:
-                            yield {"__type": "thinking", "content": delta}
-                    else:
-                        delta = content[len(answer):] if content.startswith(answer) else content
-                        answer = content
-                        if delta:
-                            yield delta
-                if data.get("status") == "complete":
-                    break
+            done = False
+            try:
+                for event in self._iter_sse(response):
+                    data = event.get("data") or {}
+                    if not event.get("success", True):
+                        raise UpstreamHintError(str(event.get("error_msg") or "千问错误"))
+                    for message in data.get("messages") or []:
+                        content = message.get("content")
+                        mime = str(message.get("mime_type") or "")
+                        if not isinstance(content, str) or not content:
+                            continue
+                        if "think" in mime.lower() or "reason" in mime.lower():
+                            delta = content[len(thinking):] if content.startswith(thinking) else content
+                            thinking = content
+                            if delta:
+                                yield {"__type": "thinking", "content": delta}
+                        else:
+                            delta = content[len(answer):] if content.startswith(answer) else content
+                            answer = content
+                            if delta:
+                                yield delta
+                    if data.get("status") == "complete":
+                        done = True
+                        break
+            except RequestException:
+                raise UpstreamTransientError(
+                    "千问流式连接在完成前中断"
+                ) from None
             if not answer and not thinking:
                 raise UpstreamTransientError("千问返回空响应")
+            if not done:
+                raise UpstreamTransientError(
+                    "千问流式响应缺少 complete 状态"
+                )
         finally:
             response.close()
 

@@ -11,6 +11,8 @@ import uuid
 from typing import Any
 
 from curl_cffi import requests as cffi_requests
+from curl_cffi.requests.exceptions import RequestException
+from upstream_http import stream_timeout
 
 from adapter import (
     RateLimitError,
@@ -321,6 +323,7 @@ class KimiAdapter:
             headers=headers,
             data=body,
             stream=True,
+            timeout=stream_timeout(),
         )
         if response.status_code == 401:
             response.close()
@@ -331,6 +334,7 @@ class KimiAdapter:
                 headers=headers,
                 data=body,
                 stream=True,
+                timeout=stream_timeout(),
             )
         self._raise_response(response, "chat")
         return response
@@ -379,6 +383,7 @@ class KimiAdapter:
         ready_out: dict | None = None,
         upstream_model: str | None = None,
     ):
+        last_error = ""
         for attempt in range(2):
             response = self._open_chat(
                 prompt,
@@ -387,22 +392,37 @@ class KimiAdapter:
                 search=search_enabled,
             )
             yielded = False
+            done = False
             try:
-                for event in _iter_connect_events(response):
-                    if "done" in event:
-                        break
-                    for kind, text in self._event_chunks(event):
-                        yielded = True
-                        if kind == "thinking":
-                            yield {"__type": "thinking", "content": text}
-                        else:
-                            yield text
+                try:
+                    for event in _iter_connect_events(response):
+                        if "done" in event:
+                            done = True
+                            break
+                        for kind, text in self._event_chunks(event):
+                            yielded = True
+                            if kind == "thinking":
+                                yield {"__type": "thinking", "content": text}
+                            else:
+                                yield text
+                except RequestException:
+                    if yielded:
+                        raise UpstreamTransientError(
+                            "Kimi stream was interrupted before completion"
+                        ) from None
+                    last_error = "Kimi stream was interrupted before completion"
             finally:
                 response.close()
-            if yielded:
+            if yielded and done:
                 return
+            if yielded:
+                raise UpstreamTransientError(
+                    "Kimi stream ended before its done event"
+                )
             if attempt == 0:
                 time.sleep(0.4)
+        if last_error:
+            raise UpstreamTransientError(last_error)
         raise UpstreamTransientError("Kimi returned an empty stream")
 
     def chat(

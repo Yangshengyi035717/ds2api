@@ -20,9 +20,11 @@ import datetime
 from pathlib import Path
 from dotenv import load_dotenv
 from wasmtime import Store, Module, Instance
+from upstream_http import stream_timeout
 
 try:
     from curl_cffi import requests as cffi_requests
+    from curl_cffi.requests.exceptions import RequestException
 except ImportError as e:
     raise SystemExit(
         "curl_cffi is required for TLS fingerprint impersonation.\n"
@@ -145,6 +147,33 @@ class UserMutedError(RateLimitError):
     def __init__(self, message: str, mute_until: float | None = None):
         super().__init__(message, "user_muted")
         self.mute_until = mute_until
+
+
+def _is_completion_event(event_type, data) -> bool:
+    """Accept only explicit message-level terminal states, never EOF."""
+    if not isinstance(data, dict):
+        return False
+    if event_type == "close":
+        return not data.get("auto_resume") and data.get("click_behavior", "none") == "none"
+    path, value = data.get("p"), data.get("v")
+    if path == "response/status":
+        return value == "FINISHED"
+    if isinstance(value, dict) and isinstance(value.get("response"), dict):
+        return value["response"].get("status") == "FINISHED"
+    if path == "response" and data.get("o") == "BATCH" and isinstance(value, list):
+        return any(isinstance(item, dict) and item.get("p") in {"status", "response/status"}
+                   and item.get("v") == "FINISHED" for item in value)
+    return False
+
+
+def _iter_response_lines(response):
+    """Normalize curl stream interruptions without leaking transport details."""
+    try:
+        yield from response.iter_lines()
+    except RequestException:
+        raise UpstreamTransientError(
+            "DeepSeek stream was interrupted before completion"
+        ) from None
 
 
 def _mute_msg(raw) -> str | None:
@@ -621,6 +650,7 @@ class DeepSeekAdapter:
             f"{BASE_URL}/api/v0/chat/completion",
             json=body,
             headers=headers,
+            timeout=sum(stream_timeout()),
         )
         kind = self._detect_waf_challenge(resp.status_code, resp.headers)
         if kind:
@@ -706,11 +736,14 @@ class DeepSeekAdapter:
                    thinking_enabled: bool = False, search_enabled: bool = False,
                    parent_message_id: int | None = None,
                    ready_out: dict | None = None) -> tuple[str, str]:
-        resp = self._send_completion(session_id, prompt, stream=False,
-                                     model_type=model_type,
-                                     thinking_enabled=thinking_enabled,
-                                     search_enabled=search_enabled,
-                                     parent_message_id=parent_message_id)
+        try:
+            resp = self._send_completion(session_id, prompt, stream=False,
+                                         model_type=model_type,
+                                         thinking_enabled=thinking_enabled,
+                                         search_enabled=search_enabled,
+                                         parent_message_id=parent_message_id)
+        except RequestException:
+            raise UpstreamTransientError("DeepSeek response transport failed") from None
         if not resp.text or not resp.text.strip():
             raise UpstreamEmptyError("upstream returned empty response body")
 
@@ -844,6 +877,8 @@ class DeepSeekAdapter:
         # session instead of silently returning empty content.
         if not content and not thinking:
             raise UpstreamEmptyError("upstream returned empty content")
+        if not any(_is_completion_event(event_type, data) for event_type, data in events):
+            raise UpstreamTransientError("DeepSeek response ended before its FINISHED event")
         return content, thinking
 
     def chat_stream(self, session_id: str, prompt: str,
@@ -886,6 +921,8 @@ class DeepSeekAdapter:
                 # immediately, no backoff retry.
                 raise
             except RateLimitError:
+                if yielded:
+                    raise
                 idx = attempt - 1
                 if idx >= len(RATE_LIMIT_RETRY_DELAYS):
                     raise
@@ -894,6 +931,8 @@ class DeepSeekAdapter:
                             extra={"attempt": attempt, "delay": delay})
                 time.sleep(delay)
             except UpstreamTransientError as e:
+                if yielded:
+                    raise
                 idx = attempt - 1
                 if idx >= len(RATE_LIMIT_RETRY_DELAYS):
                     raise
@@ -942,6 +981,7 @@ class DeepSeekAdapter:
         resp = self._client.post(
             f"{BASE_URL}/api/v0/chat/completion",
             json=body, headers=headers, stream=True,
+            timeout=stream_timeout(),
         )
         try:
             kind = self._detect_waf_challenge(resp.status_code, resp.headers)
@@ -956,8 +996,9 @@ class DeepSeekAdapter:
             resp.raise_for_status()
             frag_type = None  # None, 'thinking', 'content'
             current_event = ""  # tracks the most recent `event:` SSE field
+            completed = False
 
-            for line in resp.iter_lines():
+            for line in _iter_response_lines(resp):
                 # curl_cffi yields bytes from iter_lines.
                 if isinstance(line, (bytes, bytearray)):
                     try:
@@ -966,12 +1007,13 @@ class DeepSeekAdapter:
                         continue
                 line = line.rstrip()
                 if not line:
+                    current_event = ""
                     continue
-                if line.startswith("event: "):
-                    current_event = line[7:]
+                if line.startswith("event:"):
+                    current_event = line[6:].strip()
                     continue
-                if line.startswith("data: "):
-                    data_str = line[6:]
+                if line.startswith("data:"):
+                    data_str = line[5:].lstrip()
                     if not data_str:
                         continue
                     try:
@@ -988,6 +1030,7 @@ class DeepSeekAdapter:
                         continue
                 if not isinstance(data, dict):
                     continue
+                completed = completed or _is_completion_event(current_event, data)
 
                 p = data.get("p", "")
                 o = data.get("o", "")
@@ -1025,6 +1068,8 @@ class DeepSeekAdapter:
                         err.get("content") or err.get("msg") or "",
                         err.get("finish_reason") or "upstream_hint_error",
                     )
+                if current_event == "close" and completed:
+                    return
 
                 # Multi-turn parent chain: record the upstream response
                 # message id from the `event: ready` frame so the caller can
@@ -1108,8 +1153,16 @@ class DeepSeekAdapter:
 
                 # Status
                 if p == "response/status":
+                    if v == "FINISHED":
+                        completed = True
                     yield {"__type": "status", "status": v}
+                    if completed:
+                        return
                     continue
+            if not completed:
+                raise UpstreamTransientError(
+                    "DeepSeek stream ended before its FINISHED event"
+                )
         finally:
             try:
                 resp.close()

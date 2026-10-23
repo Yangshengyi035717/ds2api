@@ -274,13 +274,16 @@ class ResponsesStreamTranslator:
         self.response_id = response_id
         self.model = model
         self.request_data = request_data
+        self.created_at = int(time.time())
         self.sequence = 0
         self.message_id = _new_id("msg")
+        self.reasoning_id = _new_id("rs")
         self.text = ""
         self.reasoning = ""
         self.tool_calls: dict[int, dict[str, Any]] = {}
         self.usage = _usage_from_chat(None)
         self.started = False
+        self.finished = False
 
     def _next_sequence(self) -> int:
         value = self.sequence
@@ -288,6 +291,8 @@ class ResponsesStreamTranslator:
         return value
 
     def _event(self, name: str, payload: dict[str, Any]) -> str:
+        if isinstance(payload.get("response"), dict):
+            payload["response"]["created_at"] = self.created_at
         return format_sse(name, {"type": name, **payload, "sequence_number": self._next_sequence()})
 
     def initial_events(self) -> list[str]:
@@ -328,6 +333,8 @@ class ResponsesStreamTranslator:
 
     def feed_chat_chunk(self, chunk: dict[str, Any]) -> list[str]:
         events: list[str] = []
+        if self.finished:
+            return events
         usage = chunk.get("usage")
         if isinstance(usage, dict):
             self.usage = _usage_from_chat(usage)
@@ -352,7 +359,25 @@ class ResponsesStreamTranslator:
             ))
         reasoning = delta.get("reasoning_content")
         if isinstance(reasoning, str) and reasoning:
+            if not self.reasoning:
+                events.append(self._event(
+                    "response.output_item.added",
+                    {"output_index": 1, "item": {
+                        "id": self.reasoning_id, "type": "reasoning",
+                        "status": "in_progress", "summary": [],
+                    }},
+                ))
+                events.append(self._event(
+                    "response.reasoning_summary_part.added",
+                    {"item_id": self.reasoning_id, "output_index": 1,
+                     "summary_index": 0, "part": {"type": "summary_text", "text": ""}},
+                ))
             self.reasoning += reasoning
+            events.append(self._event(
+                "response.reasoning_summary_text.delta",
+                {"item_id": self.reasoning_id, "output_index": 1,
+                 "summary_index": 0, "delta": reasoning},
+            ))
 
         raw_tool_calls = delta.get("tool_calls")
         if isinstance(raw_tool_calls, list):
@@ -375,6 +400,9 @@ class ResponsesStreamTranslator:
         return events
 
     def final_events(self) -> list[str]:
+        if self.finished:
+            return []
+        self.finished = True
         events: list[str] = []
         if self.text:
             events.append(self._event(
@@ -406,12 +434,17 @@ class ResponsesStreamTranslator:
         next_index = 1
         if self.reasoning:
             reasoning_item = _reasoning_item(self.reasoning)
+            reasoning_item["id"] = self.reasoning_id
+            reasoning_item["status"] = "completed"
             events.append(self._event(
-                "response.output_item.added",
-                {
-                    "output_index": next_index,
-                    "item": {**reasoning_item, "status": "in_progress", "summary": []},
-                },
+                "response.reasoning_summary_text.done",
+                {"item_id": self.reasoning_id, "output_index": next_index,
+                 "summary_index": 0, "text": self.reasoning},
+            ))
+            events.append(self._event(
+                "response.reasoning_summary_part.done",
+                {"item_id": self.reasoning_id, "output_index": next_index,
+                 "summary_index": 0, "part": reasoning_item["summary"][0]},
             ))
             events.append(self._event(
                 "response.output_item.done",
@@ -457,15 +490,32 @@ class ResponsesStreamTranslator:
         events.append(self._event("response.completed", {"response": response}))
         return events
 
-    def error_event(self, message: str) -> str:
+    def progress_event(self) -> str:
+        """Keep event-based clients alive without inventing text or usage."""
+        return self._event("response.in_progress", {"response": _base_response(
+            self.response_id, self.model, self.request_data,
+            status="in_progress", output=[],
+        )})
+
+    def error_event(self, message: str, code: str = "upstream_error") -> str:
+        self.finished = True
         return self._event(
             "error",
             {
-                "code": "upstream_error",
+                "code": code,
                 "message": message,
                 "param": None,
             },
         )
+
+    def failed_event(self, message: str, code: str = "upstream_error") -> str:
+        self.finished = True
+        response = _base_response(
+            self.response_id, self.model, self.request_data,
+            status="failed", output=[], usage=self.usage,
+        )
+        response["error"] = {"code": code, "message": message}
+        return self._event("response.failed", {"response": response})
 
 
 def parse_chat_sse_event(raw_event: str) -> Iterable[str]:

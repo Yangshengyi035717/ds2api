@@ -178,6 +178,7 @@ class TestChatRetry:
             return _FakeResp(
                 "event: ready\ndata: {\"request_message_id\":1}\n\n"
                 "data: {\"v\":\"正常\"}\n\n"
+                "event: close\ndata: {}\n\n"
             )
 
         monkeypatch.setattr(ad, "_send_completion", fake_send)
@@ -213,6 +214,7 @@ class TestChatRetry:
             return _FakeResp(
                 "event: ready\ndata: {\"request_message_id\":1}\n\n"
                 "data: {\"v\":\"重试内容\"}\n\n"
+                "event: close\ndata: {}\n\n"
             )
 
         monkeypatch.setattr(ad, "_send_completion", fake_send)
@@ -237,6 +239,7 @@ class TestChatRetry:
             return _FakeResp(
                 "event: ready\ndata: {\"request_message_id\":1}\n\n"
                 "data: {\"v\":\"ok\"}\n\n"
+                "event: close\ndata: {}\n\n"
             )
 
         monkeypatch.setattr(ad, "_send_completion", fake_send)
@@ -274,6 +277,7 @@ class TestChatStream:
             return _FakeStreamResp(
                 "event: ready\ndata: {\"request_message_id\":1}\n\n"
                 "data: {\"v\":\"流式内容\"}\n\n"
+                "event: close\ndata: {}\n\n"
             )
 
         monkeypatch.setattr(ad, "_pow_headers", lambda *a, **k: {})

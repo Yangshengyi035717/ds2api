@@ -21,6 +21,8 @@ from typing import Any
 from urllib.parse import quote
 
 from curl_cffi import requests as cffi_requests
+from curl_cffi.requests.exceptions import RequestException
+from upstream_http import stream_timeout
 
 from adapter import (
     RateLimitError,
@@ -483,6 +485,7 @@ class ZaiAdapter:
             headers=headers,
             json=body,
             stream=True,
+            timeout=stream_timeout(),
         )
         if response.status_code == 401:
             raise ZaiAuthError("z.ai token/cookie 已失效")
@@ -550,21 +553,32 @@ class ZaiAdapter:
         )
         content_parts: list[str] = []
         thinking_parts: list[str] = []
+        done = False
         try:
-            for data in self._iter_events(response):
-                delta = data.get("delta_content")
-                phase = data.get("phase")
-                if isinstance(delta, str) and delta:
-                    if phase == "thinking":
-                        thinking_parts.append(delta)
-                    elif phase in {"answer", "final"}:
-                        content_parts.append(delta)
-                if data.get("done"):
-                    break
+            try:
+                for data in self._iter_events(response):
+                    delta = data.get("delta_content")
+                    phase = data.get("phase")
+                    if isinstance(delta, str) and delta:
+                        if phase == "thinking":
+                            thinking_parts.append(delta)
+                        elif phase in {"answer", "final"}:
+                            content_parts.append(delta)
+                    if data.get("done") is True or phase == "done":
+                        done = True
+                        break
+            except RequestException:
+                raise UpstreamTransientError(
+                    "z.ai stream was interrupted before completion"
+                ) from None
         finally:
             response.close()
         if not content_parts and not thinking_parts:
             raise UpstreamTransientError("z.ai returned an empty response")
+        if not done:
+            raise UpstreamTransientError(
+                "z.ai stream ended before its done event"
+            )
         return "".join(content_parts), "".join(thinking_parts)
 
     def chat_stream(
@@ -588,18 +602,29 @@ class ZaiAdapter:
         )
         try:
             yielded = False
-            for data in self._iter_events(response):
-                delta = data.get("delta_content")
-                phase = data.get("phase")
-                if isinstance(delta, str) and delta:
-                    yielded = True
-                    if phase == "thinking":
-                        yield {"__type": "thinking", "content": delta}
-                    elif phase in {"answer", "final"}:
-                        yield delta
-                if data.get("done"):
-                    break
+            done = False
+            try:
+                for data in self._iter_events(response):
+                    delta = data.get("delta_content")
+                    phase = data.get("phase")
+                    if isinstance(delta, str) and delta:
+                        yielded = True
+                        if phase == "thinking":
+                            yield {"__type": "thinking", "content": delta}
+                        elif phase in {"answer", "final"}:
+                            yield delta
+                    if data.get("done") is True or phase == "done":
+                        done = True
+                        break
+            except RequestException:
+                raise UpstreamTransientError(
+                    "z.ai stream was interrupted before completion"
+                ) from None
             if not yielded:
                 raise UpstreamTransientError("z.ai returned an empty stream")
+            if not done:
+                raise UpstreamTransientError(
+                    "z.ai stream ended before its done event"
+                )
         finally:
             response.close()

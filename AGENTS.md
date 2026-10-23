@@ -4,6 +4,14 @@
 
 ## 当前账号配置规则
 
+- 长流可靠性（2026-10-23）：各 provider 必须检查自己的成功终态，不能以 EOF
+  代替完成；传输中断按临时上游错误处理，不将账号凭据标坏。公共流式桥接和
+  15 秒心跳在 `streaming.py`，流式等待预算在 `upstream_http.py`；Responses
+  实时转发推理摘要，失败发 `error` / `response.failed`，不发 completed。
+  排队/会话创建与网络读取必须离开 ASGI 事件循环；取消时先收回上游流再释放
+  账号，不能关闭正在另一个线程 next() 的生成器。详见
+  [长流修复与验证](docs/stream-reliability.md)。
+
 - 新增 `provider=mimo`（小米 MiMo Studio），公开模型为 `mimo-v2.6-pro` 和
   `mimo-v2.6-flash`。账号、代理、导入、保活、API 文档和 Playground 均按 provider 隔离接入。
 - MiMo 使用 Cookie 认证：必须包含 `userId`、`xiaomichatbot_serviceToken`、

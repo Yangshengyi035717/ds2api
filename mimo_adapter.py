@@ -9,6 +9,7 @@ from urllib.parse import quote
 
 from curl_cffi import requests as cffi_requests
 from curl_cffi.requests.exceptions import RequestException
+from upstream_http import stream_timeout
 
 from adapter import RateLimitError, UpstreamHintError, UpstreamTransientError
 from provider_registry import mimo_model_name, mimo_upstream_model
@@ -159,6 +160,7 @@ class MimoAdapter:
                 headers=self._headers(stream=stream),
                 json=body,
                 stream=stream,
+                timeout=stream_timeout() if stream else 120,
                 allow_redirects=False,
             )
         except RequestException:

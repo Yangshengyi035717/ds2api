@@ -8,6 +8,8 @@ import uuid
 from typing import Any
 
 from curl_cffi import requests as cffi_requests
+from curl_cffi.requests.exceptions import RequestException
+from upstream_http import stream_timeout
 
 from adapter import RateLimitError, UpstreamHintError, UpstreamTransientError
 from provider_registry import doubao_model_name, doubao_upstream_model
@@ -350,6 +352,7 @@ class DoubaoAdapter:
             headers=self._headers(),
             json=self._body(prompt, thinking=thinking, search=search),
             stream=True,
+            timeout=stream_timeout(),
         )
         self._raise_response(response, "chat")
         return response
@@ -374,12 +377,18 @@ class DoubaoAdapter:
         answer_seen = False
         thinking_seen = False
         thinking_blocks: set[str] = set()
+        done = False
         try:
             for event, payload in self._iter_sse(response):
                 try:
                     data = json.loads(payload) if payload else {}
                 except json.JSONDecodeError:
                     continue
+                if event == "SSE_REPLY_END":
+                    if data.get("end_type") != 1:
+                        raise UpstreamTransientError("Doubao stream ended abnormally")
+                    done = True
+                    break
                 if event == "SSE_ACK":
                     ack = (data.get("ack_client_meta") or {})
                     if ready_out is not None and ack.get("conversation_id"):
@@ -418,6 +427,10 @@ class DoubaoAdapter:
                         yield text
             if not answer_seen and not thinking_seen:
                 raise UpstreamTransientError("Doubao returned an empty stream")
+            if not done:
+                raise UpstreamTransientError("Doubao stream ended before its SSE_REPLY_END event")
+        except RequestException:
+            raise UpstreamTransientError("Doubao stream was interrupted before completion") from None
         finally:
             response.close()
 

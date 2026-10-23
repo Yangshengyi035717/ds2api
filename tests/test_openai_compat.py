@@ -532,3 +532,56 @@ def test_responses_alias_uses_openai_error_envelope(compat_client):
     response = client.post("/responses", json={"input": "hello"})
     assert response.status_code == 401
     assert response.json()["error"]["type"] == "authentication_error"
+
+
+@pytest.mark.parametrize("failure", ["exception", "eof", "done_only", "error", "malformed"])
+def test_responses_stream_failure_never_emits_completed(compat_client, monkeypatch, failure):
+    client, key, _ = compat_client
+    closed = []
+
+    async def fake_stream(*args, **kwargs):
+        async def events():
+            try:
+                yield 'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'
+                if failure == "exception":
+                    raise RuntimeError("private transport details")
+                if failure == "done_only":
+                    yield "data: [DONE]\n\n"
+                if failure == "error":
+                    yield 'data: {"error":{"code":"upstream_temporarily_unavailable","message":"interrupted"}}\n\n'
+                if failure == "malformed":
+                    yield 'data: {broken}\n\n'
+            finally:
+                closed.append(True)
+        return StreamingResponse(events(), media_type="text/event-stream")
+
+    monkeypatch.setattr(server, "_handle_stream", fake_stream)
+    response = client.post("/v1/responses", headers=_auth(key), json={"input": "test", "stream": True})
+    assert response.status_code == 200
+    assert response.text.count("event: error\n") == 1
+    assert response.text.count("event: response.failed\n") == 1
+    assert "response.completed" not in response.text
+    assert "private transport details" not in response.text
+    assert closed == [True]
+
+
+def test_responses_heartbeat_is_not_lost_and_utf8_chunks_are_incremental(compat_client, monkeypatch):
+    client, key, _ = compat_client
+
+    async def fake_stream(*args, **kwargs):
+        async def events():
+            yield ": keep-alive\n\n"
+            raw = ('data: ' + json.dumps({"choices": [{"delta": {"reasoning_content": "想一下"}}]}, ensure_ascii=False) + '\r\n\r\n').encode()
+            for byte in raw:
+                yield bytes([byte])
+            yield 'data: {"choices":[{"delta":{"content":"answer"},"finish_reason":"stop"}]}\n\n'
+            yield "data: [DONE]\n\n"
+        return StreamingResponse(events(), media_type="text/event-stream")
+
+    monkeypatch.setattr(server, "_handle_stream", fake_stream)
+    response = client.post("/v1/responses", headers=_auth(key), json={"input": "test", "stream": True})
+    assert response.text.count("event: response.in_progress\n") == 2
+    assert "event: response.reasoning_summary_text.delta" in response.text
+    assert '"delta": "想一下"' in response.text
+    assert response.text.count("event: response.completed\n") == 1
+    assert "event: error\n" not in response.text

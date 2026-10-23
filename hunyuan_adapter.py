@@ -6,6 +6,8 @@ import os
 from typing import Any
 
 from curl_cffi import requests as cffi_requests
+from curl_cffi.requests.exceptions import RequestException
+from upstream_http import stream_timeout
 
 from adapter import RateLimitError, UpstreamHintError, UpstreamTransientError
 from provider_registry import hunyuan_model_name, hunyuan_upstream_model
@@ -259,6 +261,7 @@ class HunyuanAdapter:
                 separators=(",", ":"),
             ).encode("utf-8"),
             stream=True,
+            timeout=stream_timeout(),
         )
         response_headers = getattr(response, "headers", {}) or {}
         content_type = str(response_headers.get("content-type") or "").lower()
@@ -331,6 +334,7 @@ class HunyuanAdapter:
         # the assistant answer, not the reasoning channel. Only an explicit
         # reasoning/thought event type should populate reasoning_content.
         thought_channel_is_reasoning = bool(thinking_enabled)
+        done = False
         try:
             for event_name, payload in self._iter_sse(response):
                 if event_name == "error":
@@ -346,7 +350,10 @@ class HunyuanAdapter:
                     elif value.startswith("text"):
                         channel = "answer"
                     continue
-                if not payload or payload == "[DONE]":
+                if payload == "[DONE]":
+                    done = True
+                    break
+                if not payload:
                     continue
                 try:
                     event = json.loads(payload)
@@ -380,6 +387,10 @@ class HunyuanAdapter:
                     yield text
             if not answer_seen and not thinking_seen:
                 raise UpstreamTransientError("Hunyuan returned an empty stream")
+            if not done:
+                raise UpstreamTransientError("Hunyuan stream ended before its [DONE] event")
+        except RequestException:
+            raise UpstreamTransientError("Hunyuan stream was interrupted before completion") from None
         finally:
             response.close()
 

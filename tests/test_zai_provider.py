@@ -6,9 +6,11 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from curl_cffi.requests.exceptions import RequestException
 
 import account_pool as account_pool_module
 from account_pool import AccountPool
+from adapter import UpstreamTransientError
 from provider_registry import (
     PROVIDER_DEEPSEEK,
     PROVIDER_ZAI,
@@ -140,7 +142,7 @@ def test_zai_session_creation_reuses_server_message_ids():
     ])
 
     class FakeClient:
-        def post(self, url, headers, json, stream=False):
+        def post(self, url, headers, json, stream=False, **kwargs):
             calls.append({"url": url, "body": json})
             if url.endswith("/api/v1/chats/new"):
                 return CreateResponse()
@@ -215,6 +217,48 @@ def test_zai_stream_separates_thinking_and_answer():
     assert response.closed is True
 
 
+def test_zai_stream_rejects_end_without_done_event():
+    adapter = ZaiAdapter(
+        token="test-token",
+        user_id="test-user",
+        device_id="test-device",
+    )
+    response = _FakeResponse([
+        {
+            "type": "chat:completion",
+            "data": {"delta_content": "partial answer", "phase": "answer"},
+        },
+    ])
+    adapter._open_stream = lambda **_kwargs: response
+
+    with pytest.raises(UpstreamTransientError, match="done event"):
+        list(adapter.chat_stream("chat-id", "prompt"))
+    assert response.closed is True
+
+
+def test_zai_stream_wraps_incomplete_read_as_transient_error():
+    adapter = ZaiAdapter(
+        token="test-token",
+        user_id="test-user",
+        device_id="test-device",
+    )
+
+    class BrokenResponse(_FakeResponse):
+        def iter_lines(self):
+            yield (
+                b'data: {"type":"chat:completion","data":'
+                b'{"delta_content":"partial","phase":"answer"}}'
+            )
+            raise RequestException("transfer closed")
+
+    response = BrokenResponse([])
+    adapter._open_stream = lambda **_kwargs: response
+
+    with pytest.raises(UpstreamTransientError, match="interrupted"):
+        list(adapter.chat_stream("chat-id", "prompt"))
+    assert response.closed is True
+
+
 def test_zai_nonstream_collects_both_phases():
     adapter = ZaiAdapter(token="test-token", user_id="test-user", device_id="test-device")
     response = _FakeResponse([
@@ -234,6 +278,25 @@ def test_zai_nonstream_collects_both_phases():
     adapter._open_stream = lambda **_kwargs: response
 
     assert adapter.chat("chat-id", "prompt") == ("hello", "think")
+    assert response.closed is True
+
+
+def test_zai_nonstream_rejects_end_without_done_event():
+    adapter = ZaiAdapter(
+        token="test-token",
+        user_id="test-user",
+        device_id="test-device",
+    )
+    response = _FakeResponse([
+        {
+            "type": "chat:completion",
+            "data": {"delta_content": "partial answer", "phase": "answer"},
+        },
+    ])
+    adapter._open_stream = lambda **_kwargs: response
+
+    with pytest.raises(UpstreamTransientError, match="done event"):
+        adapter.chat("chat-id", "prompt")
     assert response.closed is True
 
 

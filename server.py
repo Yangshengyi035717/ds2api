@@ -5,6 +5,7 @@ the thinking / search capabilities (DeepSeek merged its quick and expert modes,
 so ``thinking_enabled`` is the only model-behaviour switch left).
 """
 import json
+import codecs
 import atexit
 import os
 import sys
@@ -30,6 +31,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.background import BackgroundTask
+from starlette.concurrency import run_in_threadpool
+from curl_cffi.requests.exceptions import RequestException
+from streaming import HeartbeatStream, ReliableStreamingResponse, run_owned_setup
 
 from adapter import (
     DeepSeekAdapter,
@@ -962,10 +966,17 @@ class AcquiredAccount:
                 finally:
                     _UPSTREAM_LIMITER.release()
             return
-        if self._provider == PROVIDER_KIMI:
-            pool.persist_adapter_tokens(self.acct)
-        pool.release(self.acct)
-        _UPSTREAM_LIMITER.release()
+        try:
+            if self._provider == PROVIDER_KIMI:
+                try:
+                    pool.persist_adapter_tokens(self.acct)
+                except Exception:
+                    log.warning("kimi_token_persist_failed", extra={"account_id": self.acct.id})
+        finally:
+            try:
+                pool.release(self.acct)
+            finally:
+                _UPSTREAM_LIMITER.release()
 
 
 def _acquire(
@@ -1334,7 +1345,7 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
                                     provider=provider, model_name=public_model,
                                     upstream_model=upstream_model)
 
-    return _handle_nonstream(proxy_id, prompt, req.tools, model_type=model_type, thinking_mode=thinking, search_enabled=search,
+    return await run_in_threadpool(_handle_nonstream, proxy_id, prompt, req.tools, model_type=model_type, thinking_mode=thinking, search_enabled=search,
                              cache_key=cache_key, provider=provider,
                              model_name=public_model,
                              upstream_model=upstream_model)
@@ -1390,7 +1401,7 @@ async def messages(req: AnthropicRequest, request: Request):
                                        model_name=public_model,
                                        upstream_model=upstream_model)
 
-    return _anthropic_nonstream(proxy_id, prompt, tool_names,
+    return await run_in_threadpool(_anthropic_nonstream, proxy_id, prompt, tool_names,
                                 model_type=model_type, thinking_mode=thinking,
                                 search_enabled=search,
                                 cache_key=cache_key,
@@ -1439,10 +1450,12 @@ def _anthropic_nonstream(msg_id: str, prompt: str, tool_names: list[str],
             status_code=429,
             detail=f"上游限流：{e.args[0] if e.args else '请求过于频繁'}，请稍后重试",
         )
-    except UpstreamTransientError as e:
+    except (UpstreamTransientError, RequestException) as e:
         # Upstream outage, not a credential problem: keep the account
         # schedulable and let the caller retry after the advertised delay.
         get_stats().record(response_model, 0, success=False)
+        if isinstance(e, RequestException):
+            e = UpstreamTransientError("Upstream network connection failed")
         if cache_key:
             SESSION_CACHE.invalidate(cache_key)
         raise HTTPException(
@@ -1499,28 +1512,13 @@ async def _anthropic_stream(msg_id: str, prompt: str, tool_names: list[str],
                             model_name: str | None = None,
                             upstream_model: str | None = None):
     response_model = model_name or _model_name()
-    acq = _acquire(cache_key=cache_key, provider=provider)
-    try:
-        eff = acq.prepare_prompt(prompt)
-        ds_id = acq.create_session(
-            eff,
-            upstream_model=upstream_model,
-            thinking_enabled=thinking_mode,
-            search_enabled=search_enabled,
-        )
-    except MimoAuthError:
-        get_stats().record(response_model, 0, success=False)
-        pool.mark_error(acq.acct, MIMO_AUTH_MESSAGE)
-        acq.release()
-        raise HTTPException(status_code=401, detail=MIMO_AUTH_MESSAGE)
-    except Exception as e:
-        get_stats().record(response_model, 0, success=False)
-        pool.mark_error(acq.acct, str(e))
-        acq.release()
-        raise
+    acq, eff, ds_id = await _prepare_stream_account(
+        prompt, cache_key, provider, response_model, upstream_model,
+        thinking_mode, search_enabled,
+    )
     t0 = time.time()
 
-    async def event_stream():
+    def event_stream():
         nonlocal t0
         ready_out: dict = {}
         upstream_tokens = None
@@ -1551,27 +1549,36 @@ async def _anthropic_stream(msg_id: str, prompt: str, tool_names: list[str],
             }}
             yield f"event: error\ndata: {json.dumps(error, ensure_ascii=False)}\n\n"
         except Exception as e:
+            if isinstance(e, RequestException):
+                e = UpstreamTransientError("Upstream network connection failed")
             get_stats().record(response_model, (time.time() - t0) * 1000, success=False)
             if isinstance(e, (RateLimitError, UpstreamEmptyError, UpstreamTransientError)):
                 if cache_key:
                     SESSION_CACHE.invalidate(cache_key)
             else:
                 pool.mark_error(acq.acct, str(e))
-            raise
+            error = {"type": "error", "error": {
+                "type": "overloaded_error" if isinstance(e, UpstreamTransientError) else "api_error",
+                "message": str(e)[:500],
+            }}
+            yield f"event: error\ndata: {json.dumps(error, ensure_ascii=False)}\n\n"
         finally:
-            if provider == PROVIDER_MIMO and upstream_tokens is not None:
+            if upstream_tokens is not None:
                 try:
                     upstream_tokens.close()
                 except Exception:
-                    log.warning("mimo_stream_close_failed", extra={"account_id": acq.acct.id})
+                    log.warning("upstream_stream_close_failed", extra={"account_id": acq.acct.id})
             acq.release()
 
-    return StreamingResponse(
-        event_stream(),
+    stream = HeartbeatStream(event_stream(), on_close=acq.release,
+                             heartbeat='event: ping\ndata: {"type":"ping"}\n\n')
+    return ReliableStreamingResponse(
+        stream,
         media_type="text/event-stream",
-        background=BackgroundTask(acq.release) if provider == PROVIDER_MIMO else None,
+        background=BackgroundTask(stream.aclose),
         headers={
             "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
             "Connection": "keep-alive",
             **(rate_headers or {}),
         },
@@ -1623,11 +1630,13 @@ def _handle_nonstream(proxy_id: str, prompt: str, tools: list[ToolDef] | None = 
         if cache_key:
             SESSION_CACHE.invalidate(cache_key)
         raise HTTPException(status_code=429, detail=f"上游限流：{e.args[0] if e.args else '请求过于频繁'}，请稍后重试")
-    except UpstreamTransientError as e:
+    except (UpstreamTransientError, RequestException) as e:
         # Same reasoning as rate limiting: a transient upstream outage must
         # not drain the pool. 503 + Retry-After lets a parent gateway fail
         # over or retry instead of treating it as a hard error.
         get_stats().record(response_model, 0, success=False)
+        if isinstance(e, RequestException):
+            e = UpstreamTransientError("Upstream network connection failed")
         if cache_key:
             SESSION_CACHE.invalidate(cache_key)
         raise HTTPException(
@@ -1759,7 +1768,7 @@ async def responses(req: ResponsesRequest, request: Request):
     request_data = req.model_dump()
 
     if not req.stream:
-        chat_payload = _handle_nonstream(
+        chat_payload = await run_in_threadpool(_handle_nonstream,
             response_id,
             prompt,
             tools or None,
@@ -1793,58 +1802,53 @@ async def responses(req: ResponsesRequest, request: Request):
 
     def upstream_error_event(error: dict) -> str:
         message = str(error.get("message") or "Upstream error")
-        code = str(error.get("code") or "")
-        if code:
-            return translator._event(
-                "error", {"code": code, "message": message, "param": None}
-            )
-        return translator.error_event(message)
+        code = str(error.get("code") or "upstream_error")
+        # Codex handles response.failed, while other consumers handle error.
+        # Neither is a successful terminal response.
+        return translator.error_event(message, code) + translator.failed_event(message, code)
 
     async def translated_events():
         for event in translator.initial_events():
             yield event
 
         buffer = ""
-        failed = False
-        async for raw_chunk in chat_response.body_iterator:
-            text = raw_chunk.decode("utf-8") if isinstance(raw_chunk, bytes) else str(raw_chunk)
-            buffer += text.replace("\r\n", "\n")
-            separator = buffer.find("\n\n")
-            while separator != -1:
-                event_block = buffer[:separator]
-                buffer = buffer[separator + 2:]
-                for payload in parse_chat_sse_event(event_block):
-                    if payload == "[DONE]":
-                        continue
-                    try:
+        decoder = codecs.getincrementaldecoder("utf-8")()
+        finished = False
+        try:
+            async for raw_chunk in chat_response.body_iterator:
+                text = decoder.decode(raw_chunk) if isinstance(raw_chunk, bytes) else str(raw_chunk)
+                buffer = (buffer + text).replace("\r\n", "\n")
+                while "\n\n" in buffer:
+                    event_block, buffer = buffer.split("\n\n", 1)
+                    # Heartbeats carry no model text or usage. Do not drop them
+                    # while the upstream is silent or the tool sieve buffers.
+                    if any(line.startswith(":") for line in event_block.splitlines()):
+                        yield translator.progress_event()
+                    for payload in parse_chat_sse_event(event_block):
+                        if payload == "[DONE]":
+                            if not finished:
+                                raise UpstreamTransientError("Upstream stream ended without a finish reason")
+                            for event in translator.final_events():
+                                yield event
+                            return
                         chunk = json.loads(payload)
-                    except json.JSONDecodeError:
-                        continue
-                    if isinstance(chunk.get("error"), dict):
-                        failed = True
-                        yield upstream_error_event(chunk["error"])
-                        continue
-                    for event in translator.feed_chat_chunk(chunk):
-                        yield event
-                separator = buffer.find("\n\n")
-
-        if buffer.strip():
-            for payload in parse_chat_sse_event(buffer):
-                if payload != "[DONE]":
-                    try:
-                        chunk = json.loads(payload)
-                    except json.JSONDecodeError:
-                        continue
-                    if isinstance(chunk.get("error"), dict):
-                        failed = True
-                        yield upstream_error_event(chunk["error"])
-                    else:
+                        if not isinstance(chunk, dict):
+                            raise UpstreamTransientError("Upstream returned an invalid stream event")
+                        if isinstance(chunk.get("error"), dict):
+                            yield upstream_error_event(chunk["error"])
+                            return
+                        choices = chunk.get("choices") or []
+                        reason = choices[0].get("finish_reason") if choices else None
+                        if reason == "error":
+                            raise UpstreamTransientError("Upstream stream failed before completion")
+                        finished = finished or reason is not None
                         for event in translator.feed_chat_chunk(chunk):
                             yield event
-
-        if not failed:
-            for event in translator.final_events():
-                yield event
+            raise UpstreamTransientError("Upstream stream ended before its [DONE] event")
+        except Exception as exc:
+            log.warning("responses_stream_failed", extra={"provider": provider, "error_type": type(exc).__name__})
+            message = str(exc) if isinstance(exc, UpstreamTransientError) else "Upstream stream was interrupted before completion"
+            yield upstream_error_event({"message": message, "code": "upstream_temporarily_unavailable"})
 
     async def event_stream():
         events = translated_events()
@@ -1852,25 +1856,58 @@ async def responses(req: ResponsesRequest, request: Request):
             async for event in events:
                 yield event
         finally:
-            if provider == PROVIDER_MIMO:
-                await events.aclose()
-                try:
-                    await chat_response.body_iterator.aclose()
-                finally:
-                    # The translated stream can be cancelled during its
-                    # initial events, before the chat generator ever starts.
-                    if chat_response.background is not None:
-                        await chat_response.background()
+            await events.aclose()
+            try:
+                await chat_response.body_iterator.aclose()
+            finally:
+                # Also release accounts if cancelled during initial events,
+                # before the underlying chat generator has ever started.
+                if chat_response.background is not None:
+                    await chat_response.background()
 
-    return StreamingResponse(
+    return ReliableStreamingResponse(
         event_stream(),
         media_type="text/event-stream",
+        background=chat_response.background,
         headers={
             "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
             "Connection": "keep-alive",
             **rate_headers,
         },
     )
+
+
+async def _prepare_stream_account(prompt, cache_key, provider, response_model,
+                                  upstream_model, thinking_mode, search_enabled,
+                                  prompt_tokens=0):
+    def prepare():
+        acq = _acquire(cache_key=cache_key, provider=provider)
+        try:
+            eff = acq.prepare_prompt(prompt)
+            ds_id = acq.create_session(
+                eff, upstream_model=upstream_model,
+                thinking_enabled=thinking_mode, search_enabled=search_enabled,
+            )
+            return acq, eff, ds_id
+        except Exception as exc:
+            try:
+                get_stats().record(response_model, 0, success=False, prompt_tokens=prompt_tokens)
+                if isinstance(exc, (RequestException, UpstreamTransientError, UpstreamEmptyError, RateLimitError)):
+                    if cache_key:
+                        SESSION_CACHE.invalidate(cache_key)
+                    status = 429 if isinstance(exc, RateLimitError) else 503
+                    raise HTTPException(status_code=status, detail="Upstream temporarily unavailable",
+                                        headers={"Retry-After": TRANSIENT_RETRY_AFTER_SECS}) from None
+                message = MIMO_AUTH_MESSAGE if isinstance(exc, MimoAuthError) else str(exc)
+                pool.mark_error(acq.acct, message)
+                if isinstance(exc, (ZaiAuthError, KimiAuthError, QwenAuthError,
+                                    HunyuanAuthError, WenxinAuthError, DoubaoAuthError, MimoAuthError)):
+                    raise HTTPException(status_code=401, detail=message) from None
+                raise
+            finally:
+                acq.release()
+    return await run_owned_setup(prepare, lambda result: result[0].release())
 
 
 async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None = None,
@@ -1885,25 +1922,10 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
     """Streaming completion with StreamSieve tool call detection and thinking support."""
     response_model = model_name or _model_name()
     prompt_tokens = count_text(prompt)
-    acq = _acquire(cache_key=cache_key, provider=provider)
-    try:
-        eff = acq.prepare_prompt(prompt)
-        ds_id = acq.create_session(
-            eff,
-            upstream_model=upstream_model,
-            thinking_enabled=thinking_mode,
-            search_enabled=search_enabled,
-        )
-    except MimoAuthError:
-        get_stats().record(response_model, 0, success=False, prompt_tokens=prompt_tokens)
-        pool.mark_error(acq.acct, MIMO_AUTH_MESSAGE)
-        acq.release()
-        raise HTTPException(status_code=401, detail=MIMO_AUTH_MESSAGE)
-    except Exception as e:
-        get_stats().record(response_model, 0, success=False, prompt_tokens=prompt_tokens)
-        pool.mark_error(acq.acct, str(e))
-        acq.release()
-        raise
+    acq, eff, ds_id = await _prepare_stream_account(
+        prompt, cache_key, provider, response_model, upstream_model,
+        thinking_mode, search_enabled, prompt_tokens,
+    )
     tool_names = _get_tool_names(tools)
     t0 = time.time()
 
@@ -1916,7 +1938,7 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
     def _tool_chunks(*args, **kwargs):
         return _emit_tool_calls_chunks(*args, model_name=response_model, **kwargs)
 
-    async def event_stream():
+    def event_stream():
         nonlocal t0
         completion_parts: list[str] = []
         upstream_tokens = None
@@ -2071,11 +2093,13 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
             yield _chunk(proxy_id, finish=True, usage=usage)
             if include_usage:
                 yield _usage_chunk(proxy_id, usage)
-            yield "data: [DONE]\n\n"
             get_stats().record(response_model, (time.time() - t0) * 1000,
                                prompt_tokens=prompt_tokens,
                                completion_tokens=usage["completion_tokens"])
+            yield "data: [DONE]\n\n"
         except Exception as e:
+            if isinstance(e, RequestException):
+                e = UpstreamTransientError("Upstream network connection failed")
             get_stats().record(response_model, (time.time() - t0) * 1000, success=False,
                                prompt_tokens=prompt_tokens)
             message = MIMO_AUTH_MESSAGE if isinstance(e, MimoAuthError) else str(e)
@@ -2088,6 +2112,11 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
                 pool.mark_error(acq.acct, message)
             if isinstance(e, MimoAuthError):
                 log.warning("upstream_auth_failed", extra={"provider": provider})
+            elif isinstance(e, (UpstreamTransientError, RateLimitError, UpstreamEmptyError)):
+                log.warning("openai_stream_interrupted", extra={
+                    "provider": provider, "account_id": acq.acct.id,
+                    "error_type": type(e).__name__, "response_id": proxy_id,
+                })
             else:
                 log.exception("openai_stream_failed")
             # Emit a uniform error frame to the client, then [DONE] so the
@@ -2134,19 +2163,21 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
             yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"
         finally:
-            if provider == PROVIDER_MIMO and upstream_tokens is not None:
+            if upstream_tokens is not None:
                 try:
                     upstream_tokens.close()
                 except Exception:
-                    log.warning("mimo_stream_close_failed", extra={"account_id": acq.acct.id})
+                    log.warning("upstream_stream_close_failed", extra={"account_id": acq.acct.id})
             acq.release()
 
-    return StreamingResponse(
-        event_stream(),
+    stream = HeartbeatStream(event_stream(), on_close=acq.release)
+    return ReliableStreamingResponse(
+        stream,
         media_type="text/event-stream",
-        background=BackgroundTask(acq.release) if provider == PROVIDER_MIMO else None,
+        background=BackgroundTask(stream.aclose),
         headers={
             "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
             "Connection": "keep-alive",
             **(rate_headers or {}),
         },
