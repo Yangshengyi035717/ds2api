@@ -13,7 +13,7 @@ export function AppShell() {
       <div className="flex flex-1 flex-col overflow-hidden">
         <TopBar />
         <main className="flex-1 overflow-y-auto scrollbar-thin">
-          <div className="mx-auto w-full max-w-[1600px] p-3 sm:p-4 lg:p-6">
+          <div className="mx-auto flex h-full min-h-0 w-full max-w-[1600px] flex-col p-3 sm:p-4 lg:p-6">
             <Outlet />
           </div>
         </main>

@@ -174,10 +174,11 @@ export default function PlaygroundPage() {
   }
 
   return (
-    <div className="space-y-4 animate-fade-in h-full flex flex-col">
+    <div className="animate-fade-in flex h-full min-h-0 flex-col gap-4">
       <PageHeader
         title="Playground"
         description="在线测试 /v1/chat/completions"
+        className="mb-0"
         actions={
           <Button
             variant="outline"
@@ -190,9 +191,9 @@ export default function PlaygroundPage() {
         }
       />
 
-      <div className="grid min-h-0 flex-1 gap-4 sm:grid-cols-[220px,minmax(0,1fr)] xl:grid-cols-[280px,minmax(0,1fr)]">
+      <div className="grid min-h-0 flex-1 gap-4 overflow-y-auto scrollbar-thin sm:overflow-hidden sm:grid-cols-[220px,minmax(0,1fr)] xl:grid-cols-[280px,minmax(0,1fr)]">
         {/* Left column: request parameters */}
-        <Card className="self-start overflow-y-auto scrollbar-thin">
+        <Card className="min-h-0 self-stretch overflow-y-auto scrollbar-thin">
           <CardHeader className="pb-2">
             <CardTitle className="text-base flex items-center gap-2">
               <FlaskConical className="h-4 w-4" />
@@ -264,11 +265,11 @@ export default function PlaygroundPage() {
         </Card>
 
         {/* Right column: conversation */}
-        <Card className="flex min-h-[460px] flex-col">
-          <CardContent className="flex-1 min-h-0 overflow-y-auto scrollbar-thin p-4">
+        <Card className="flex min-h-[420px] flex-col overflow-hidden sm:min-h-0">
+          <CardContent className="min-h-0 flex-1 overflow-y-auto overscroll-contain scrollbar-thin p-4">
             <MessageList messages={history} streaming={streaming} />
           </CardContent>
-          <div className="border-t p-3 flex items-end gap-2">
+          <div className="flex shrink-0 items-end gap-2 border-t p-3">
             <Input
               value={input}
               onChange={(e) => setInput(e.target.value)}
