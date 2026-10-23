@@ -21,7 +21,11 @@ COOKIES = (
     f'xiaomichatbot_ph="{PH}"'
 )
 HOST = "https://aistudio.xiaomimimo.com"
-MODELS = ["mimo-v2.6-pro", "mimo-v2.6-flash"]
+MODELS = [
+    "mimo-v2.6-pro",
+    "mimo-v2.6-flash",
+    "mimo-v2.6-pro-ultraspeed-studio",
+]
 
 
 @pytest.fixture(autouse=True)
@@ -46,7 +50,7 @@ def test_mimo_models_keep_their_upstream_ids(model):
     assert registry.mimo_upstream_model(model) == model
 
 
-def test_mimo_catalog_has_only_two_observed_models():
+def test_mimo_catalog_contains_observed_models():
     assert registry.PROVIDER_MIMO in registry.SUPPORTED_PROVIDERS
     assert registry.mimo_model_name() == MODELS[0]
     assert registry.mimo_upstream_model_name() == MODELS[0]
@@ -59,7 +63,7 @@ def test_mimo_model_configuration_does_not_remap_flash(monkeypatch):
     assert registry.provider_for_model("local-mimo-pro") == registry.PROVIDER_MIMO
     assert registry.mimo_upstream_model("local-mimo-pro") == MODELS[0]
     assert registry.mimo_upstream_model(MODELS[1]) == MODELS[1]
-    assert registry.available_mimo_models() == ["local-mimo-pro", MODELS[1]]
+    assert registry.available_mimo_models() == ["local-mimo-pro", MODELS[1], MODELS[2]]
 
 
 @pytest.mark.parametrize(
@@ -628,7 +632,7 @@ def test_mimo_three_apis_route_models_and_preserve_complete_prompt(server_client
     assert ctx.runtime.pool.count("deepseek") == 1
 
 
-def test_mimo_catalog_and_manifest_advertise_two_models(server_client):
+def test_mimo_catalog_and_manifest_advertise_observed_models(server_client):
     client = server_client.client
     models = client.get("/v1/models").json()["data"]
     mimo_models = [model for model in models if model["provider"] == "mimo"]

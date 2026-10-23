@@ -205,6 +205,40 @@ def test_stream_preserves_both_fields_when_they_share_a_frame(adapter):
     assert adapter.chat("fresh-session", "hi") == ("A", "R")
 
 
+def test_ultraspeed_uses_fastchat_and_splits_inline_think_tags(adapter):
+    response = Response(events=[
+        ("message", {"type": "text", "content": "<think>\x00想一想"}),
+        ("message", {"type": "text", "content": "</think>\x00完整"}),
+        ("message", {"type": "text", "content": "回复"}),
+        ("finish", {"content": "[DONE]"}),
+    ])
+    adapter._client.responses.append(response)
+    assert adapter.chat(
+        "fresh-session",
+        "hi",
+        upstream_model="mimo-v2.6-pro-ultraspeed-studio",
+    ) == ("完整回复", "想一想")
+    url, request = adapter._client.calls[-1]
+    assert url == module.FASTCHAT_COMPLETION_URL
+    assert request["json"]["modelConfig"]["model"] == "mimo-v2.6-pro-ultraspeed-studio"
+    assert response.closed
+
+
+def test_ultraspeed_think_tags_can_span_sse_chunks(adapter):
+    adapter._client.responses.append(Response(events=[
+        ("message", {"type": "text", "content": "<thi"}),
+        ("message", {"type": "text", "content": "nk>\x00推理"}),
+        ("message", {"type": "text", "content": "</thi"}),
+        ("message", {"type": "text", "content": "nk>\x00正文"}),
+        ("finish", {"content": "[DONE]"}),
+    ]))
+    assert adapter.chat(
+        "fresh-session",
+        "hi",
+        upstream_model="mimo-v2.6-pro-ultraspeed-studio",
+    ) == ("正文", "推理")
+
+
 @pytest.mark.parametrize("events", [
     [("finish", {"content": "[DONE]"})],
     [("dialogId", {"content": "1234"}), ("finish", {"content": "[DONE]"})],

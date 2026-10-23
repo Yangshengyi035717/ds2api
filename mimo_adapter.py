@@ -19,6 +19,8 @@ COOKIE_DOMAIN = "aistudio.xiaomimimo.com"
 HEALTH_URL = f"{BASE_URL}/open-apis/chat/conversation/list"
 CREATE_URL = f"{BASE_URL}/open-apis/chat/conversation/save"
 COMPLETION_URL = f"{BASE_URL}/open-apis/react/chat"
+FASTCHAT_COMPLETION_URL = f"{BASE_URL}/fastchat/open-apis/bot/chat"
+FASTCHAT_MODELS = frozenset({"mimo-v2.6-pro-ultraspeed-studio"})
 IMPERSONATE = os.environ.get("MIMO_IMPERSONATE", "chrome150")
 REQUIRED_COOKIES = ("userId", "xiaomichatbot_serviceToken", "xiaomichatbot_ph")
 
@@ -54,6 +56,64 @@ def mimo_validate_cookies(cookies: str) -> None:
     missing = [name for name in REQUIRED_COOKIES if not mimo_cookie_value(cookies, name)]
     if missing:
         raise ValueError(f"MiMo 账号 Cookie 缺少：{', '.join(missing)}")
+
+
+class _MimoThinkTagParser:
+    """Split UltraSpeed's inline <think> stream without leaking tag bytes."""
+
+    OPEN = "<think>"
+    CLOSE = "</think>"
+
+    def __init__(self) -> None:
+        self._mode = "prefix"
+        self._buffer = ""
+
+    def feed(self, text: Any) -> list[tuple[str, str]]:
+        if not isinstance(text, str) or not text:
+            return []
+        # UltraSpeed emits NUL after opening and closing think tags.
+        self._buffer += text.replace("\x00", "")
+        output: list[tuple[str, str]] = []
+        while self._buffer:
+            if self._mode == "prefix":
+                if self._buffer.startswith(self.OPEN):
+                    self._buffer = self._buffer[len(self.OPEN):]
+                    self._mode = "reasoning"
+                    continue
+                if self.OPEN.startswith(self._buffer):
+                    break
+                self._mode = "answer"
+                continue
+            if self._mode == "reasoning":
+                index = self._buffer.find(self.CLOSE)
+                if index < 0:
+                    held = 0
+                    for length in range(len(self.CLOSE) - 1, 0, -1):
+                        if self._buffer.endswith(self.CLOSE[:length]):
+                            held = length
+                            break
+                    emit = len(self._buffer) - held
+                    if emit > 0:
+                        output.append(("thinking", self._buffer[:emit]))
+                        self._buffer = self._buffer[emit:]
+                    break
+                if index > 0:
+                    output.append(("thinking", self._buffer[:index]))
+                self._buffer = self._buffer[index + len(self.CLOSE):]
+                self._mode = "answer"
+                continue
+            if self._buffer:
+                output.append(("answer", self._buffer))
+                self._buffer = ""
+        return output
+
+    def flush(self) -> list[tuple[str, str]]:
+        if not self._buffer:
+            return []
+        kind = "thinking" if self._mode in {"prefix", "reasoning"} else "answer"
+        output = [(kind, self._buffer)]
+        self._buffer = ""
+        return output
 
 
 class MimoAdapter:
@@ -264,8 +324,17 @@ class MimoAdapter:
         ready_out: dict | None = None,
         upstream_model: str | None = None,
     ):
+        upstream_model_name = mimo_upstream_model(
+            upstream_model or mimo_model_name()
+        )
+        tagged_content = upstream_model_name.lower() in FASTCHAT_MODELS
+        completion_url = (
+            FASTCHAT_COMPLETION_URL
+            if tagged_content
+            else COMPLETION_URL
+        )
         response = self._request(
-            COMPLETION_URL,
+            completion_url,
             {
                 "msgId": uuid.uuid4().hex,
                 "conversationId": session_id,
@@ -274,7 +343,7 @@ class MimoAdapter:
                 "modelConfig": {
                     "enableThinking": bool(thinking_enabled),
                     "webSearchStatus": "enabled" if search_enabled else "disabled",
-                    "model": mimo_upstream_model(upstream_model or mimo_model_name()),
+                    "model": upstream_model_name,
                 },
                 "multiMedias": [],
             },
@@ -283,6 +352,7 @@ class MimoAdapter:
         )
         seen_content = False
         finished = False
+        content_parser = _MimoThinkTagParser() if tagged_content else None
         try:
             for event_name, data in self._iter_sse(response):
                 if data == "[DONE]":
@@ -319,8 +389,27 @@ class MimoAdapter:
                     seen_content = True
                     yield {"__type": "thinking", "content": reasoning}
                 if isinstance(content, str) and content:
+                    if content_parser is None:
+                        seen_content = True
+                        yield content
+                    else:
+                        for kind, text in content_parser.feed(content):
+                            if not text:
+                                continue
+                            seen_content = True
+                            if kind == "thinking":
+                                yield {"__type": "thinking", "content": text}
+                            else:
+                                yield text
+            if content_parser is not None:
+                for kind, text in content_parser.flush():
+                    if not text:
+                        continue
                     seen_content = True
-                    yield content
+                    if kind == "thinking":
+                        yield {"__type": "thinking", "content": text}
+                    else:
+                        yield text
             if not finished:
                 raise UpstreamTransientError("MiMo stream ended before its finish event")
             if not seen_content:

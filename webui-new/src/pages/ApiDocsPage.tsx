@@ -665,8 +665,14 @@ export default function ApiDocsPage() {
                     title="MiMo V2.6 Flash"
                     language="json"
                   />
+                  <CodeBlock
+                    code={openAiRequest('mimo-v2.6-pro-ultraspeed-studio')}
+                    title="MiMo V2.6 Pro UltraSpeed Studio"
+                    language="json"
+                  />
                   <div>
-                    <FieldRow name="公开模型名" description={`默认 mimo-v2.6-pro，另一个模型为 mimo-v2.6-flash；示例使用 ${mimoModel}，请求路由到 provider=mimo 账号。`} />
+                    <FieldRow name="公开模型名" description={`默认 mimo-v2.6-pro；可选 mimo-v2.6-flash 和 mimo-v2.6-pro-ultraspeed-studio。示例使用 ${mimoModel}，请求路由到 provider=mimo 账号。`} />
+                    <FieldRow name="UltraSpeed 协议" description="使用 /fastchat/open-apis/bot/chat；正文中的 <think> 标签会实时拆分为 reasoning_content。" />
                     <FieldRow name="认证" description={`Cookie-only；必须包含 ${MIMO_REQUIRED_COOKIES.join('、')}，值中的双引号需要保留。`} />
                     <FieldRow name="账号字段" description="无需填写 Token；User ID 从 Cookie 的 userId 提取，不需要 Device ID、Session ID 或 Shield。" />
                     <FieldRow name="导入" description="在「账号池 → 添加账号 → 小米 MiMo 导入」粘贴完整 Cookie 或包含 Cookie 的 HAR；分别返回 source=mimo-cookie / har:mimo-cookie。" />

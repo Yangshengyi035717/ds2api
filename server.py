@@ -652,7 +652,11 @@ def _model_display_name(name: str) -> str:
     if name in available_mimo_models():
         if name == mimo_model_name():
             return os.environ.get("MIMO_MODEL_DISPLAY_NAME", "MiMo V2.6 Pro").strip() or "MiMo V2.6 Pro"
-        return "MiMo V2.6 Flash"
+        if name == "mimo-v2.6-flash":
+            return "MiMo V2.6 Flash"
+        if name == "mimo-v2.6-pro-ultraspeed-studio":
+            return "MiMo V2.6 Pro UltraSpeed Studio"
+        return name
     if name == snapshot["model_name"]:
         return str(snapshot["display_name"])
     configured = os.environ.get("MODEL_DISPLAY_NAME", "").strip()

@@ -363,13 +363,18 @@ def mimo_upstream_model(model: str | None) -> str:
     aliases = {
         "mimo-v2.6-pro": "mimo-v2.6-pro",
         "mimo-v2.6-flash": "mimo-v2.6-flash",
+        "mimo-v2.6-pro-ultraspeed-studio": "mimo-v2.6-pro-ultraspeed-studio",
         mimo_model_name().lower(): mimo_upstream_model_name(),
     }
     return aliases.get(requested.lower(), requested)
 
 
 def available_mimo_models() -> list[str]:
-    return list(dict.fromkeys([mimo_model_name(), "mimo-v2.6-flash"]))
+    return list(dict.fromkeys([
+        mimo_model_name(),
+        "mimo-v2.6-flash",
+        "mimo-v2.6-pro-ultraspeed-studio",
+    ]))
 
 
 def available_models(deepseek_model: str) -> list[str]:

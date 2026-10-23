@@ -12,14 +12,19 @@
   账号，不能关闭正在另一个线程 next() 的生成器。详见
   [长流修复与验证](docs/stream-reliability.md)。
 
-- 新增 `provider=mimo`（小米 MiMo Studio），公开模型为 `mimo-v2.6-pro` 和
-  `mimo-v2.6-flash`。账号、代理、导入、保活、API 文档和 Playground 均按 provider 隔离接入。
+- 新增 `provider=mimo`（小米 MiMo Studio），公开模型为 `mimo-v2.6-pro`、
+  `mimo-v2.6-flash` 和 `mimo-v2.6-pro-ultraspeed-studio`。账号、代理、导入、保活、
+  API 文档和 Playground 均按 provider 隔离接入。
 - MiMo 使用 Cookie 认证：必须包含 `userId`、`xiaomichatbot_serviceToken`、
   `xiaomichatbot_ph`，不要求 Bearer Token。Cookie 的引号可去除，`+`、`/`、`=`
   必须保留；`ph` 通过 query 编码发送，不能使用表单解码破坏 `+`。
 - MiMo 每轮创建并保存新的会话后发送完整 prompt，不复用 DeepSeek parent/delta 链。
   SSE 只把 `message.content` 输出为正文，`reasoningContent` 输出为推理；
   `dialogId`、`usage` 和 `finish.content=[DONE]` 不能作为正文。
+- `mimo-v2.6-pro-ultraspeed-studio` 使用
+  `POST /fastchat/open-apis/bot/chat`，推理以正文中的 `<think>...</think>`
+  增量发送；适配器必须跨 chunk 识别标签，并把标签内容输出为 `reasoning_content`，
+  不能把 `<think>` 或 NUL 分隔符返回给客户端。
 - MiMo 保活调用只读 `POST /open-apis/chat/conversation/list`，仅验证登录和保存实际轮换的
   Cookie；尚未证明独立刷新 serviceToken 的协议，不宣称可无限续期。
   脱敏 HAR 可能没有 Cookie，需提示补充，不能用抓包中的会话 ID 或匿名状态当成功。

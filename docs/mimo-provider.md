@@ -1,7 +1,8 @@
 # 小米 MiMo Studio 接入
 
 本次增加 `provider=mimo`，默认公开模型为 `mimo-v2.6-pro`，同时提供
-`mimo-v2.6-flash`。两者与本次观察到的上游模型 ID 一致。
+`mimo-v2.6-flash` 和 `mimo-v2.6-pro-ultraspeed-studio`。三者与观察到的
+上游模型 ID 一致。
 
 ## 协议证据
 
@@ -13,6 +14,7 @@
 | REA HAR 解码 | `ev_4dc34d831fc20b71ae42975a53f3338cff4374849e741d1ac49856bb907b0193` | 历史流量，不能单独证明当前运行行为 |
 | REA 接口视图 | `ev_0141fbd64be64fe66c710e43e13161f5aae8088fb502f7b138271c298ab3f18e` | 路径、方法、响应类型及记录序号 |
 | 当前公开前端静态分析 | `ev_599af605fcdeb221c19a6537de013208bb9d6cc6915553fdc80013e0b46cbb74` | `main.41a56ba0.chunk.js`；静态图部分覆盖，不代表执行追踪 |
+| UltraSpeed HAR | SHA256 `45483b8e7db3f37ac13a9e4a792e2339933855156caca095bef9ddbe89daf32c` | 4 个记录；包含 fastchat SSE 与指标上报 |
 
 HAR 的 Cookie 请求头和 Cookie 列表均为空。真实验证使用用户另外提供的
 Cookie；没有把该凭据放入源码、测试、文档或诊断报告。
@@ -28,6 +30,10 @@ Cookie；没有把该凭据放入源码、测试、文档或诊断报告。
    `dialogId` 和重复的 `usage` 事件均不是正文；
    `finish` 事件包含 `{"content":"[DONE]"}`。
 5. `genTitle` 用于生成会话标题，完成对话并不依赖它，本实现不调用。
+6. `mimo-v2.6-pro-ultraspeed-studio` 使用
+   `POST /fastchat/open-apis/bot/chat`。SSE 事件结构仍为
+   `dialogId`、`message`、`usage`、`finish`，但推理位于
+   `message.content` 的 `<think>...</think>` 区间，并带有 NUL 分隔符。
 
 额外进行了真实请求验证：只读
 `POST /open-apis/chat/conversation/list` 携带
@@ -48,6 +54,8 @@ HTTP 200 / `code=0` / `data.dataList`，去掉登录凭据后返回 HTTP 401 / `
   提前断流分别处理；提前断流不能伪装成正常 `stop`。
 - 三种兼容 API 共用项目现有格式层。工具调用沿用现有文本 DSML 方案，
   不宣称新增了 MiMo 原生工具协议。
+- UltraSpeed 按模型 ID 选择 fastchat 路径；标签解析器保留跨 chunk 的
+  半截 `<think>` / `</think>`，将推理和正文分别输出，并丢弃 NUL 分隔符。
 
 ## 使用与复验
 
@@ -60,6 +68,9 @@ HTTP 200 / `code=0` / `data.dataList`，去掉登录凭据后返回 HTTP 401 / `
 6. 选择 `mimo-v2.6-flash` 并打开流式，检查正文与推理分流，以及
    `finish_reason=stop` 和 `[DONE]`。
 7. 保活后再次调用，确认空 Token 不会导致账号被误标记失效。
+8. 选择 `mimo-v2.6-pro-ultraspeed-studio` 并打开流式，确认上游使用
+   `/fastchat/open-apis/bot/chat`，客户端正文不含 `<think>`，推理出现在
+   `reasoning_content`。
 
 本地回归测试：
 
@@ -88,6 +99,16 @@ npm --prefix "webui-new" run build
 脱敏验证记录保存在 `data/diagnostics/mimo-api-verification-20261022.json`，
 文档页截图为 `data/diagnostics/mimo-api-docs.png`；这些本地产物不进入 Git。
 
+## UltraSpeed 复验（2026-10-23）
+
+- 使用本地已导入的 MiMo Cookie 发起一次短请求，HTTP 200、
+  `text/event-stream`，收到 `dialogId`、7 个 `usage`、4 个 `message` 和
+  `finish`，3.505 秒正常结束。
+- 正文同时包含 `<think>...</think>` 和 NUL 分隔符；去除标签后的最终正文为
+  `MIMO_ULTRA_OK`。这说明不能把原始 content 直接返回给兼容 API。
+- HAR 只覆盖一次真实生成，未覆盖 401、429、空流和所有模型权限错误；
+  这些边界由适配器现有错误映射及合成测试覆盖。
+
 ## 服务器同步
 
 用户补充授权同步本地凭据后，已构建并更新服务器的 `dsapi` Docker 容器，
@@ -112,7 +133,7 @@ npm --prefix "webui-new" run build
   轮换的 Cookie，不能保证无限延长会话。
 - 上游会在 `enableThinking=false` 时仍返回 `reasoningContent`；本实现保留
   实际返回的数据，不保证开关能强制改变模型行为。
-- 两个模型当前前端配置均关闭联网搜索能力。请求字段可透传，不能据此宣称
+- 三个模型当前前端配置均关闭联网搜索能力。请求字段可透传，不能据此宣称
   上游一定执行搜索。
 - 抓包包含一次图片示例，但项目公共请求层当前采用文本 prompt，本次未实现
   MiMo 图片上传或多模态请求。
