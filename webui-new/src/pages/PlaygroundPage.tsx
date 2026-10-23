@@ -31,17 +31,17 @@ interface ApiMessage {
 
 /** Display labels for provider-hosted models returned by /v1/models. */
 const MODEL_LABELS: Record<string, string> = {
-  'deepseek-chat': 'DeepSeek Chat · deepseek',
-  'glm-5.3-flash': 'GLM-5.3 Flash · z.ai',
-  'kimi-k2.6': 'Kimi K2.6 · kimi',
-  'kimi-k3': 'Kimi K3 · kimi',
-  'kimi-k2.8': 'Kimi K2.8 · kimi',
-  'qwen3.7-max': 'Qwen3.7 Max · qianwen',
-  'hunyuan-hy4-preview': 'Hunyuan HY4 Preview · hunyuan',
-  'wenxin-smart-mode': 'Wenxin Smart Mode · wenxin',
-  'doubao-seed': 'Doubao Seed · doubao',
-  'mimo-v2.6-pro': 'MiMo V2.6 Pro · 小米 MiMo',
-  'mimo-v2.6-flash': 'MiMo V2.6 Flash · 小米 MiMo',
+  'deepseek-chat': 'DeepSeek Chat',
+  'glm-5.3-flash': 'GLM-5.3 Flash',
+  'kimi-k2.6': 'Kimi K2.6',
+  'kimi-k3': 'Kimi K3',
+  'kimi-k2.8': 'Kimi K2.8',
+  'qwen3.7-max': 'Qwen3.7 Max',
+  'hunyuan-hy4-preview': 'Hunyuan HY4 Preview',
+  'wenxin-smart-mode': 'Wenxin Smart Mode',
+  'doubao-seed': 'Doubao Seed',
+  'mimo-v2.6-pro': 'MiMo V2.6 Pro',
+  'mimo-v2.6-flash': 'MiMo V2.6 Flash',
   'deepseek-reasoner': 'DeepSeek Reasoner（旧别名）',
 }
 

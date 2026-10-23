@@ -30,8 +30,11 @@ import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { CodeBlock } from '@/components/api-docs/CodeBlock'
+import { ModelLabel } from '@/components/models/ModelLabel'
+import { ProviderIcon } from '@/components/models/ProviderIcon'
 import { useToast } from '@/hooks/use-toast'
 import { useApi } from '@/hooks/useApi'
+import { resolveModelProvider } from '@/lib/providers'
 import { consumeSse } from '@/lib/sse'
 import { formatLatency } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth'
@@ -484,6 +487,7 @@ export function ApiDebugger({ defaultModel = 'deepseek-chat' }: ApiDebuggerProps
       HTTP {result.status}
     </Badge>
   ) : null
+  const selectedModel = modelData?.data.find((item) => item.id === model)
 
   return (
     <Card className="overflow-hidden">
@@ -566,26 +570,48 @@ export function ApiDebugger({ defaultModel = 'deepseek-chat' }: ApiDebuggerProps
           {modelData?.data.length ? (
             <Select value={model} onValueChange={setModel} disabled={busy}>
               <SelectTrigger id="debug-model">
-                <SelectValue placeholder="选择模型…" />
+                <div className="min-w-0 flex-1">
+                  {selectedModel ? (
+                    <ModelLabel
+                      modelId={selectedModel.id}
+                      provider={selectedModel.provider}
+                      ownedBy={selectedModel.owned_by}
+                      displayName={selectedModel.display_name}
+                    />
+                  ) : (
+                    <span className="text-muted-foreground">选择模型…</span>
+                  )}
+                </div>
               </SelectTrigger>
               <SelectContent>
                 {modelData.data.map((item) => (
                   <SelectItem key={item.id} value={item.id}>
-                    {item.display_name
-                      ? `${item.display_name} · ${item.provider || item.owned_by || 'model'}`
-                      : item.id}
+                    <ModelLabel
+                      modelId={item.id}
+                      provider={item.provider}
+                      ownedBy={item.owned_by}
+                      displayName={item.display_name}
+                    />
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
           ) : (
-            <Input
-              id="debug-model"
-              value={model}
-              onChange={(event) => setModel(event.target.value)}
-              placeholder="deepseek-chat 或 glm-5.3-flash"
-              disabled={busy}
-            />
+            <div className="relative">
+              <ProviderIcon
+                provider={resolveModelProvider({ modelId: model })}
+                size={16}
+                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2"
+              />
+              <Input
+                id="debug-model"
+                value={model}
+                onChange={(event) => setModel(event.target.value)}
+                placeholder="deepseek-chat 或 glm-5.3-flash"
+                className="pl-9"
+                disabled={busy}
+              />
+            </div>
           )}
         </div>
 

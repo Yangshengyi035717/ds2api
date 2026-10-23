@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { RefreshCw, Save, Sparkles } from 'lucide-react'
+import { ModelLabel } from '@/components/models/ModelLabel'
+import { ProviderIcon } from '@/components/models/ProviderIcon'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -20,6 +22,7 @@ import {
 } from '@/components/ui/select'
 import { useToast } from '@/hooks/use-toast'
 import { get, put } from '@/lib/api'
+import { resolveModelProvider } from '@/lib/providers'
 import type { RuntimeConfigResponse } from '@/lib/types'
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -173,14 +176,22 @@ export function RuntimeConfigManager() {
           <>
             <div className="space-y-1.5">
               <Label htmlFor="runtime-model-name">公开模型名称</Label>
-              <Input
-                id="runtime-model-name"
-                value={modelName}
-                onChange={(event) => setModelName(event.target.value)}
-                placeholder="deepseek-chat"
-                maxLength={128}
-                disabled={saving}
-              />
+              <div className="relative">
+                <ProviderIcon
+                  provider={resolveModelProvider({ modelId: modelName })}
+                  size={16}
+                  className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2"
+                />
+                <Input
+                  id="runtime-model-name"
+                  value={modelName}
+                  onChange={(event) => setModelName(event.target.value)}
+                  placeholder="deepseek-chat"
+                  className="pl-9"
+                  maxLength={128}
+                  disabled={saving}
+                />
+              </div>
               <p className="text-[11px] leading-relaxed text-muted-foreground">
                 保存后会写入 <code className="font-mono">data/runtime_config.json</code>，
                 并立即更新 <code className="font-mono">/v1/models</code> 和响应中的 model 字段。
@@ -259,11 +270,21 @@ export function RuntimeConfigManager() {
 
             {config && (
               <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
-                <div className="rounded-md border px-3 py-2">
-                  当前名称：<code className="font-mono text-foreground">{config.model_name}</code>
+                <div className="flex items-center gap-2 rounded-md border px-3 py-2">
+                  当前名称：
+                  <ModelLabel
+                    modelId={config.model_name}
+                    iconSize={14}
+                    textClassName="font-mono text-foreground"
+                  />
                 </div>
-                <div className="rounded-md border px-3 py-2">
-                  默认名称：<code className="font-mono text-foreground">{config.default_model_name}</code>
+                <div className="flex items-center gap-2 rounded-md border px-3 py-2">
+                  默认名称：
+                  <ModelLabel
+                    modelId={config.default_model_name}
+                    iconSize={14}
+                    textClassName="font-mono text-foreground"
+                  />
                 </div>
               </div>
             )}

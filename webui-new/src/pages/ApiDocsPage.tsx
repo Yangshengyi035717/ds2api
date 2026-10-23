@@ -12,6 +12,8 @@ import {
 import { ApiDebugger } from '@/components/api-docs/ApiDebugger'
 import { CodeBlock } from '@/components/api-docs/CodeBlock'
 import { PageHeader } from '@/components/layout/PageHeader'
+import { ModelLabel } from '@/components/models/ModelLabel'
+import { ProviderIcon } from '@/components/models/ProviderIcon'
 import { Badge } from '@/components/ui/badge'
 import {
   Card,
@@ -21,7 +23,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/ui/select'
 import { get } from '@/lib/api'
 import type { ModelsResponse, RuntimeConfigResponse } from '@/lib/types'
 import { MIMO_REQUIRED_COOKIES } from '@/lib/providers'
@@ -216,6 +218,10 @@ export default function ApiDocsPage() {
   const mimoModel = models.find((model) => model.provider === 'mimo' && model.id === 'mimo-v2.6-pro')?.id
     ?? models.find((model) => model.provider === 'mimo')?.id
     ?? 'mimo-v2.6-pro'
+  const exampleModels: ModelsResponse['data'] = models.length > 0
+    ? models
+    : [{ id: modelName }]
+  const selectedExample = exampleModels.find((model) => model.id === modelName)
 
   return (
     <div className="w-full space-y-4 animate-fade-in">
@@ -267,14 +273,29 @@ export default function ApiDocsPage() {
                   </div>
                   <Select value={modelName} onValueChange={setModelName}>
                     <SelectTrigger className="h-8">
-                      <SelectValue />
+                      <div className="min-w-0 flex-1">
+                        {selectedExample ? (
+                          <ModelLabel
+                            modelId={selectedExample.id}
+                            provider={selectedExample.provider}
+                            ownedBy={selectedExample.owned_by}
+                            displayName={selectedExample.display_name}
+                            iconSize={15}
+                          />
+                        ) : (
+                          <ModelLabel modelId={modelName} iconSize={15} />
+                        )}
+                      </div>
                     </SelectTrigger>
                     <SelectContent>
-                      {(models.length > 0 ? models : [{ id: modelName }]).map((model) => (
+                      {exampleModels.map((model) => (
                         <SelectItem key={model.id} value={model.id}>
-                          {model.display_name
-                            ? `${model.display_name} · ${model.provider || 'model'}`
-                            : model.id}
+                          <ModelLabel
+                            modelId={model.id}
+                            provider={model.provider}
+                            ownedBy={model.owned_by}
+                            displayName={model.display_name}
+                          />
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -287,8 +308,9 @@ export default function ApiDocsPage() {
                   <Badge
                     key={model.id}
                     variant={model.provider === 'zai' ? 'outline' : 'secondary'}
-                    className="gap-1"
+                    className="gap-1.5"
                   >
+                    <ProviderIcon provider={model.provider ?? model.owned_by} size={14} />
                     {model.id}
                     <span className="opacity-60">{model.provider || model.owned_by}</span>
                   </Badge>

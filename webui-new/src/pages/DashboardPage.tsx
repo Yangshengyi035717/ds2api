@@ -12,6 +12,7 @@ import {
 } from 'lucide-react'
 import { useApi } from '@/hooks/useApi'
 import { PageHeader } from '@/components/layout/PageHeader'
+import { ModelLabel } from '@/components/models/ModelLabel'
 import { StatCard } from '@/components/stats/StatCard'
 import { RequestsChart } from '@/components/stats/RequestsChart'
 import { LatencyChart } from '@/components/stats/LatencyChart'
@@ -169,7 +170,7 @@ export default function DashboardPage() {
             <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
               {Object.entries(stats.data.models).map(([model, m]) => (
                 <div key={model} className="rounded-md border bg-card p-3 text-sm">
-                  <div className="font-medium">{model}</div>
+                  <ModelLabel modelId={model} className="font-medium" />
                   <div className="mt-1 flex justify-between text-xs text-muted-foreground">
                     <span>{formatNumber(m.requests)} 请求</span>
                     <span>

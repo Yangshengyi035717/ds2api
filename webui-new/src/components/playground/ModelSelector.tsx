@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { ModelLabel } from '@/components/models/ModelLabel'
+import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/ui/select'
 import { useApi } from '@/hooks/useApi'
 import { ApiCallError } from '@/lib/api'
 import type { ModelsResponse } from '@/lib/types'
@@ -33,19 +34,35 @@ export function ModelSelector({ value, onChange, labels }: Props) {
   }
 
   const models = data?.data ?? []
+  const selected = models.find((model) => model.id === value)
 
   return (
     <Select value={value} onValueChange={onChange}>
       <SelectTrigger>
-        <SelectValue placeholder="选择模型…" />
+        <div className="min-w-0 flex-1">
+          {selected ? (
+            <ModelLabel
+              modelId={selected.id}
+              provider={selected.provider}
+              ownedBy={selected.owned_by}
+              displayName={selected.display_name}
+              label={labels?.[selected.id]}
+            />
+          ) : (
+            <span className="text-muted-foreground">选择模型…</span>
+          )}
+        </div>
       </SelectTrigger>
       <SelectContent>
         {models.map((m) => (
           <SelectItem key={m.id} value={m.id}>
-            {labels?.[m.id] ??
-              (m.display_name
-                ? `${m.display_name} · ${m.provider || m.owned_by || 'model'}`
-                : m.id)}
+            <ModelLabel
+              modelId={m.id}
+              provider={m.provider}
+              ownedBy={m.owned_by}
+              displayName={m.display_name}
+              label={labels?.[m.id]}
+            />
           </SelectItem>
         ))}
       </SelectContent>
