@@ -237,6 +237,97 @@ def test_streaming_finish_chunk_contains_usage(monkeypatch):
     assert events[-1]["usage"] == events[-2]["usage"]
 
 
+def test_streaming_repairs_malformed_view_image_tool_call(monkeypatch):
+    malformed = (
+        "<|DSML|tool_calls>\n"
+        '  <|DSML|invoke name="view_image">\n'
+        '    <|DSML|parameter name="path"><![CDATA[C:\\tmp\\image.png]]>'
+        "</|DSML|parameter>\n"
+        "  <|DSML|invoke>\n"
+        "</|DSML|tool_calls>"
+    )
+
+    class FakeAdapter:
+        def chat_stream(self, session_id, prompt, **kwargs):
+            ready_out = kwargs["ready_out"]
+            ready_out["response_message_id"] = 2
+            ready_out["session_id"] = session_id
+            for index in range(0, len(malformed), 7):
+                yield malformed[index:index + 7]
+            yield {"__type": "status", "status": "FINISHED"}
+
+    class FakeAcquired:
+        acct = SimpleNamespace(id="account-test")
+        adapter = FakeAdapter()
+        parent_message_id = None
+
+        def prepare_prompt(self, prompt):
+            return prompt
+
+        def create_session(self, *args, **kwargs):
+            return "session-test"
+
+        def record_message_id(self, *args, **kwargs):
+            return None
+
+        def release(self):
+            return None
+
+    monkeypatch.setattr(
+        server,
+        "_acquire",
+        lambda cache_key=None, provider="deepseek": FakeAcquired(),
+    )
+    tools = [server.ToolDef(
+        type="function",
+        function=server.FunctionDef(
+            name="view_image",
+            description="View a local image",
+            parameters={
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+            },
+        ),
+    )]
+
+    async def collect() -> str:
+        response = await server._handle_stream(
+            "chatcmpl-view-image",
+            "inspect image",
+            tools,
+        )
+        chunks = []
+        async for chunk in response.body_iterator:
+            chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+        return "".join(chunks)
+
+    body = asyncio.run(collect())
+    events = [
+        json.loads(line.removeprefix("data: "))
+        for line in body.splitlines()
+        if line.startswith("data: ") and line != "data: [DONE]"
+    ]
+    tool_deltas = [
+        tool
+        for event in events
+        for tool in (event.get("choices") or [{}])[0].get("delta", {}).get("tool_calls", [])
+    ]
+
+    assert not any(
+        "<|DSML|" in str((event.get("choices") or [{}])[0].get("delta", {}).get("content", ""))
+        for event in events
+    )
+    assert any(
+        tool.get("function", {}).get("name") == "view_image"
+        for tool in tool_deltas
+    )
+    assert any(
+        "image.png" in tool.get("function", {}).get("arguments", "")
+        for tool in tool_deltas
+    )
+
+
 def test_responses_nonstream_translation(compat_client, monkeypatch):
     client, key, _ = compat_client
 

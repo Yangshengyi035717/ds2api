@@ -58,11 +58,13 @@ class StreamSieve:
     )
 
     def __init__(self, parse_fn: Callable | None = None,
-                 max_capture_buffer: int | None = None):
+                 max_capture_buffer: int | None = None,
+                 reject_unparsed_tool_call: bool = False):
         self.parse_fn = parse_fn
         self._pending = ""
         self._capture_buf = ""
         self._capturing = False
+        self._reject_unparsed_tool_call = reject_unparsed_tool_call
         self._max_capture_buffer = (
             max_capture_buffer if max_capture_buffer is not None
             else MAX_CAPTURE_BUFFER
@@ -237,6 +239,10 @@ class StreamSieve:
         tool_calls, cleaned = self.parse_fn(self._capture_buf)
         if tool_calls:
             return ("", tool_calls, "")
+        if self._reject_unparsed_tool_call:
+            raise IncompleteToolCallError(
+                "model emitted a closed DSML block without a valid tool call"
+            )
         return (self._capture_buf, None, "")
 
     def _is_capture_complete(self) -> bool:

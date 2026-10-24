@@ -1,4 +1,6 @@
 """Unit tests for tool_dsml parser/builder."""
+import json
+
 import pytest
 
 from tool_dsml import (
@@ -148,3 +150,56 @@ def test_parse_dsml_tool_calls_handles_cdata_escapes():
     # just verify it doesn't crash and returns the raw bytes.
     args = tcs[0]["function"]["arguments"]
     assert "a]]>b" in args
+
+
+def test_parse_dsml_tool_calls_repairs_unslashed_invoke_close():
+    path = (
+        r"C:\Users\86139\AppData\Local\Temp"
+        r"\codex-clipboard-221226c9-cfce-4802-8d31-a57e1a53a94f.png"
+    )
+    text = (
+        "<|DSML|tool_calls>\n"
+        '  <|DSML|invoke name="view_image">\n'
+        f'    <|DSML|parameter name="path"><![CDATA[{path}]]></|DSML|parameter>\n'
+        "  <|DSML|invoke>\n"
+        "</|DSML|tool_calls>"
+    )
+
+    tcs, cleaned = parse_dsml_tool_calls(text, ["view_image"])
+
+    assert cleaned == ""
+    assert len(tcs) == 1
+    assert tcs[0]["function"]["name"] == "view_image"
+    assert json.loads(tcs[0]["function"]["arguments"])["path"] == path
+
+
+def test_parse_dsml_tool_calls_repairs_unslashed_parameter_close():
+    text = (
+        "<|DSML|tool_calls>"
+        '<|DSML|invoke name="f">'
+        '<|DSML|parameter name="x"><![CDATA[demo <|DSML|invoke>]]>'
+        "<|DSML|parameter>"
+        "</|DSML|invoke>"
+        "</|DSML|tool_calls>"
+    )
+
+    tcs, _ = parse_dsml_tool_calls(text, ["f"])
+
+    assert len(tcs) == 1
+    assert "demo <|DSML|invoke>" in tcs[0]["function"]["arguments"]
+
+
+def test_unslashed_tag_outside_tool_wrapper_is_not_rewritten():
+    text = (
+        "literal <|DSML|invoke>\n"
+        "<|DSML|tool_calls>"
+        '<|DSML|invoke name="f">'
+        '<|DSML|parameter name="x"><![CDATA[ok]]></|DSML|parameter>'
+        "<|DSML|invoke>"
+        "</|DSML|tool_calls>"
+    )
+
+    tcs, cleaned = parse_dsml_tool_calls(text, ["f"])
+
+    assert len(tcs) == 1
+    assert "literal <invoke>" in cleaned

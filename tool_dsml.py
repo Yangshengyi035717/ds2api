@@ -15,6 +15,19 @@ from typing import Any
 
 _CDATA_OPEN = "<![CDATA["
 _CDATA_CLOSE = "]]>"
+_CDATA_BLOCK_RE = re.compile(r"(<!\[CDATA\[.*?\]\]>)", re.DOTALL)
+_TOOL_WRAPPER_RE = re.compile(
+    r"<(?:\|DSML\|)?tool_calls?>.*?</(?:\|DSML\|)?tool_calls?>",
+    re.DOTALL | re.IGNORECASE,
+)
+_UNSLASHED_INVOKE_RE = re.compile(
+    r"<(\|DSML\|)?invoke\s*>",
+    re.IGNORECASE,
+)
+_UNSLASHED_PARAMETER_RE = re.compile(
+    r"<(\|DSML\|)?parameter\s*>",
+    re.IGNORECASE,
+)
 
 
 def strip_dsml_markup(text: str) -> str:
@@ -80,12 +93,49 @@ def extract_cdata(text: str) -> str:
     return text
 
 
+def _repair_missing_closing_slash(text: str) -> str:
+    """Repair nameless DSML tags that can only be omitted-slash closers.
+
+    Some providers occasionally emit ``<|DSML|invoke>`` instead of
+    ``</|DSML|invoke>``. A nameless invoke/parameter opening tag is invalid,
+    so accepting it as a closer is safe and keeps the tool call executable.
+    CDATA is left untouched because parameter values may contain tag-like
+    text.
+    """
+    if not text:
+        return text
+
+    def repair_block(block: str) -> str:
+        parts = _CDATA_BLOCK_RE.split(block)
+        for index in range(0, len(parts), 2):
+            parts[index] = _UNSLASHED_INVOKE_RE.sub(
+                lambda match: f"</{match.group(1) or ''}invoke>",
+                parts[index],
+            )
+            parts[index] = _UNSLASHED_PARAMETER_RE.sub(
+                lambda match: f"</{match.group(1) or ''}parameter>",
+                parts[index],
+            )
+        return "".join(parts)
+
+    parts = []
+    last = 0
+    for match in _TOOL_WRAPPER_RE.finditer(text):
+        parts.append(text[last:match.start()])
+        parts.append(repair_block(match.group(0)))
+        last = match.end()
+    if not parts:
+        return text
+    parts.append(text[last:])
+    return "".join(parts)
+
+
 def parse_dsml_tool_calls(text: str, tool_names: list[str] | None = None) -> tuple[list[dict], str]:
     """从文本中解析 DSML 工具调用，返回 (tool_calls, cleaned_text)"""
     if not text:
         return [], text
 
-    normalized = strip_dsml_markup(text)
+    normalized = strip_dsml_markup(_repair_missing_closing_slash(text))
     tool_calls = []
 
     # <tool_calls>...</tool_calls> 或 <tool_call>...</tool_call>
@@ -281,6 +331,7 @@ RULES:
 - Only the tools listed at the end of this message are available
 - Use <|DSML|tool_calls> wrapper with one or more <|DSML|invoke> entries
 - Tool name in invoke name attribute
+- Closing tags MUST start with </; never reuse an opening tag to close
 - String values MUST use <![CDATA[...]]>
 - Numbers, booleans, null stay plain text
 - First non-whitespace character must be < for tool calls

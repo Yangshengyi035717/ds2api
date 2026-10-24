@@ -150,3 +150,44 @@ def test_incomplete_tool_call_can_fail_closed_when_tools_are_active():
         s.feed(chunk)
     with pytest.raises(IncompleteToolCallError):
         s.flush(reject_incomplete_tool_call=True)
+
+
+def test_malformed_view_image_call_is_repaired_and_executed():
+    from tool_dsml import parse_dsml_tool_calls
+
+    text = (
+        "<|DSML|tool_calls>\n"
+        '  <|DSML|invoke name="view_image">\n'
+        '    <|DSML|parameter name="path"><![CDATA[C:\\tmp\\image.png]]>'
+        "</|DSML|parameter>\n"
+        "  <|DSML|invoke>\n"
+        "</|DSML|tool_calls>"
+    )
+    s = StreamSieve(
+        parse_fn=lambda value: parse_dsml_tool_calls(value, ["view_image"]),
+        reject_unparsed_tool_call=True,
+    )
+
+    text_out, calls = _collect(
+        s,
+        [text[index:index + 9] for index in range(0, len(text), 9)],
+    )
+
+    assert text_out == ""
+    assert len(calls) == 1
+    assert calls[0]["function"]["name"] == "view_image"
+    assert "image.png" in calls[0]["function"]["arguments"]
+
+
+def test_closed_but_unparseable_tool_call_fails_closed():
+    s = StreamSieve(
+        parse_fn=lambda value: ([], value),
+        reject_unparsed_tool_call=True,
+    )
+
+    with pytest.raises(IncompleteToolCallError):
+        s.feed(
+            "<|DSML|tool_calls>\n"
+            '  <|DSML|invoke name="view_image">\n'
+            "</|DSML|tool_calls>"
+        )

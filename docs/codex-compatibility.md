@@ -31,6 +31,12 @@ DS2API 将 Chat Completions 上游转换为 Codex 使用的 Responses API。兼�
 `response.output_text.*`、content part 和 tool 参数事件包含 Codex 严格解析所需的
 `logprobs`、`call_id`、`name`、`output_index` 等字段。
 
+部分上游模型会把闭合标签误写成无属性开标签，例如用
+`<|DSML|invoke>` 代替 `</|DSML|invoke>`。解析器只在完整
+`tool_calls` wrapper 内把“无 name 的 invoke/parameter 标签”视为省略斜杠的
+闭合标签，CDATA 内容保持原样。若完整工具块仍无法解析出任何有效调用，
+服务端返回瞬态错误而不是把 DSML 原文当正文发给客户端。
+
 ## 模型目录
 
 带 `client_version` 查询参数或 Codex User-Agent 的 `GET /v1/models` 返回：

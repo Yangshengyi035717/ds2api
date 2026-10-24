@@ -2577,7 +2577,10 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
             def _parse_fn(text):
                 return parse_dsml_tool_calls(text, tool_names)
 
-            sieve = StreamSieve(parse_fn=_parse_fn)
+            sieve = StreamSieve(
+                parse_fn=_parse_fn,
+                reject_unparsed_tool_call=bool(tool_names),
+            )
             full_buf = ""
 
             def _record_turn():
@@ -2614,7 +2617,13 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
 
                 # Normal text token (str) — feed to sieve
                 full_buf += token
-                for evt in sieve.feed(token):
+                try:
+                    sieve_events = sieve.feed(token)
+                except IncompleteToolCallError:
+                    raise UpstreamTransientError(
+                        "模型返回了不完整的工具调用，请重试"
+                    ) from None
+                for evt in sieve_events:
                     if evt.type == "text":
                         if evt.data:
                             completion_parts.append(evt.data)
