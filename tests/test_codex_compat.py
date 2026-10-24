@@ -15,6 +15,9 @@ from mimo_adapter import MimoAdapter
 from responses_format import (
     ResponsesStreamTranslator,
     ResponsesToolAdapter,
+    decode_compaction_summary,
+    encode_compaction_summary,
+    has_compaction_trigger,
     input_to_chat_messages,
     tools_to_chat_tools,
 )
@@ -248,6 +251,108 @@ def test_stream_custom_tool_uses_custom_input_lifecycle():
     )
 
 
+def test_compaction_item_round_trips_into_next_chat_history():
+    encrypted = encode_compaction_summary("Goal: keep the API healthy.")
+    assert decode_compaction_summary(encrypted) == "Goal: keep the API healthy."
+    messages = input_to_chat_messages([{
+        "type": "compaction",
+        "encrypted_content": encrypted,
+    }])
+    assert messages == [{
+        "role": "system",
+        "content": "Compacted prior conversation:\nGoal: keep the API healthy.",
+    }]
+    assert has_compaction_trigger([{"type": "compaction_trigger"}])
+
+    summary_fallback = input_to_chat_messages([{
+        "type": "compaction",
+        "encrypted_content": "opaque-upstream-ciphertext",
+        "summary": [{"type": "summary_text", "text": "Visible summary"}],
+    }])
+    assert summary_fallback == [{
+        "role": "system",
+        "content": "Compacted prior conversation:\nVisible summary",
+    }]
+
+
+def test_compaction_body_signal_returns_codex_compaction_sse(monkeypatch):
+    def fake_nonstream(*args, **kwargs):
+        return {
+            "model": "deepseek-chat",
+            "choices": [{"message": {"role": "assistant", "content": "Compact summary"}}],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6},
+        }
+
+    monkeypatch.setattr(server, "_check_api_auth", lambda request: None)
+    monkeypatch.setattr(server, "_check_rate_limit", lambda request: {})
+    monkeypatch.setattr(server, "_handle_nonstream", fake_nonstream)
+    request = Request({
+        "type": "http",
+        "method": "POST",
+        "path": "/v1/responses",
+        "headers": [(b"user-agent", b"codex_cli_rs/0.164.0")],
+        "client": ("unit", 1),
+    })
+    req = server.ResponsesRequest(
+        model="deepseek-chat",
+        input=[
+            {"type": "message", "role": "user", "content": "Finish the migration."},
+            {"type": "compaction_trigger"},
+        ],
+        stream=True,
+    )
+    response = asyncio.run(server.responses(req, request))
+
+    async def consume():
+        return "".join([chunk async for chunk in response.body_iterator])
+
+    body = asyncio.run(consume())
+    events = [
+        json.loads(line[6:])
+        for line in body.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert [event["type"] for event in events] == [
+        "response.created",
+        "response.in_progress",
+        "response.output_item.done",
+        "response.completed",
+    ]
+    item = events[-1]["response"]["output"][0]
+    assert item["type"] == "compaction"
+    assert decode_compaction_summary(item["encrypted_content"]) == "Compact summary"
+    assert item["summary"] == [{"type": "summary_text", "text": "Compact summary"}]
+    assert events[-1]["response"]["usage"]["total_tokens"] == 6
+
+
+def test_compact_alias_returns_nonstream_compaction_item(monkeypatch):
+    def fake_nonstream(*args, **kwargs):
+        return {
+            "model": "deepseek-chat",
+            "choices": [{"message": {"role": "assistant", "content": "Alias summary"}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+
+    monkeypatch.setattr(server, "_check_api_auth", lambda request: None)
+    monkeypatch.setattr(server, "_check_rate_limit", lambda request: {})
+    monkeypatch.setattr(server, "_handle_nonstream", fake_nonstream)
+    request = Request({
+        "type": "http",
+        "method": "POST",
+        "path": "/v1/responses/compact",
+        "headers": [(b"user-agent", b"codex_cli_rs/0.164.0")],
+        "client": ("unit", 1),
+    })
+    req = server.ResponsesRequest(model="deepseek-chat", input=[], stream=False)
+    response = asyncio.run(server.responses(req, request))
+    body = json.loads(response.body)
+    assert body["output"][0]["type"] == "compaction"
+    assert decode_compaction_summary(
+        body["output"][0]["encrypted_content"]
+    ) == "Alias summary"
+    assert body["output"][0]["summary"][0]["text"] == "Alias summary"
+
+
 def test_mimo_query_too_long_maps_to_context_limit_without_poisoning():
     adapter = object.__new__(MimoAdapter)
     adapter.cookies = ""
@@ -308,9 +413,19 @@ def test_codex_manifest_contains_context_and_catalog_contract():
     assert entry["display_name"] == "DeepSeek Chat"
     assert entry["context_window"] == 128_000
     assert entry["max_context_window"] == 128_000
+    assert entry["auto_compact_token_limit"] == 64_000
+    assert entry["truncation_policy"] == {"mode": "tokens", "limit": 10_000}
+    assert entry["effective_context_window_percent"] == 85
     assert entry["supports_parallel_tool_calls"] is False
     assert entry["supports_search_tool"] is False
     assert entry["model_messages"]["instructions_template"] == ""
+
+    mimo = next(
+        item for item in manifest["models"]
+        if item["slug"] == "mimo-v2.6-pro-ultraspeed-studio"
+    )
+    assert mimo["context_window"] == 64_000
+    assert mimo["auto_compact_token_limit"] == 40_000
 
 
 def test_models_endpoint_returns_codex_manifest_for_catalog_request(monkeypatch):

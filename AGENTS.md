@@ -20,6 +20,11 @@
   reasoning、后 message、再 tool，并实时发送工具参数与完整终态。上下文超限使用
   `context_length_exceeded`，不能污染账号状态。完整协议与配置见
   [Codex Responses 兼容](docs/codex-compatibility.md)。
+- Codex remote compaction v2 使用同一 `/v1/responses` 路径和
+  `{"type":"compaction_trigger"}` 输入项。服务端必须生成 `type=compaction`
+  output item，并兼容 `/v1/responses/compact` 别名；摘要通过版本化的
+  `encrypted_content` 在下一轮恢复。模型目录必须给出有限的
+  `auto_compact_token_limit`，否则自定义模型不会自动压缩。
 
 - 新增 `provider=mimo`（小米 MiMo Studio），公开模型为 `mimo-v2.6-pro`、
   `mimo-v2.6-flash` 和 `mimo-v2.6-pro-ultraspeed-studio`。账号、代理、导入、保活、

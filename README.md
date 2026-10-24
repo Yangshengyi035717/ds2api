@@ -481,6 +481,11 @@ Codex 兼容行为：
 
 - `model_catalog_url` 返回 Codex 模型目录，包含上下文窗口和工具能力，
   避免客户端使用错误的 fallback 元数据。
+- 模型目录同时提供 `auto_compact_token_limit` 和
+  `effective_context_window_percent`，Codex 会在上下文耗尽前自动压缩；
+  已经超限的旧线程仍需 `/compact` 或新建线程。
+- 支持 Codex remote compaction v2：`compaction_trigger` 会生成标准
+  `compaction` item；压缩摘要会在后续请求中恢复为内部上下文。
 - 默认 `CODEX_TOOL_MODE=core`，只暴露编码必需的 function/custom 工具，
   避免一次发送全部 MCP/namespace 工具导致上下文超限。
 - 可选 `all` 会摊平 namespace 子工具并在响应中还原 namespace。

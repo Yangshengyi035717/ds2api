@@ -732,12 +732,13 @@ export default function ApiDocsPage() {
                     language="toml"
                   />
                   <div>
-                    <FieldRow name="model_catalog_url" description="让 Codex 读取上下文窗口和工具能力，避免 Unknown model 回退到错误的上下文预算。" />
+                    <FieldRow name="model_catalog_url" description="让 Codex 读取上下文窗口、自动压缩阈值和工具能力，避免 Unknown model 回退到错误的上下文预算。" />
                     <FieldRow name="wire_api" description="必须为 responses；DS2API 同时提供 /v1/responses 和 /responses。" />
                     <FieldRow name="env_key" description="通过环境变量提供 DS2API 客户端 API Key，不要把 Key 写入配置文件。" />
                     <FieldRow name="supports_websockets" description="非 OpenAI 网关应设为 false，使用 HTTP/SSE。" />
                     <FieldRow name="tool mode" description="服务端 CODEX_TOOL_MODE=core 默认只暴露 exec_command、write_stdin、view_image 等必要工具，降低上下文超限和上游并发。" />
                     <FieldRow name="web_search" description="Codex 会固定声明 web_search；默认不映射为上游联网搜索，避免每个请求都触发搜索。" />
+                    <FieldRow name="自动压缩" description="支持 compaction_trigger 与 /responses/compact，生成 compaction item 并在下一轮恢复摘要。" />
                   </div>
                   <CodeBlock
                     code={`$env:DS2API_API_KEY="YOUR_API_KEY"

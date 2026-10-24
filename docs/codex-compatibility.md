@@ -49,6 +49,66 @@ model_catalog_url = "https://dsapi.example.com/v1/models"
 这样客户端不会使用错误的 fallback 上下文窗口，并会按 provider 的实际预算执行
 自动压缩。
 
+自定义模型没有 Codex 内置的压缩默认值，因此目录还必须返回有限的
+`auto_compact_token_limit`：
+
+- 128K 上下文模型：64K 压缩阈值
+- MiMo 64K 上下文：40K 压缩阈值
+- `effective_context_window_percent=85`
+- 工具输出按 `tokens` 截断，单项上限 10K
+
+如果旧线程已经超过硬上限，Codex 仍会要求新建线程或手动 `/compact`；
+自动压缩只对尚未耗尽且重新加载了模型目录的会话生效。
+
+## Remote compaction v2
+
+Codex 的自动压缩请求仍是 `POST /v1/responses`，但会在 `input` 末尾附加：
+
+```json
+{"type":"compaction_trigger"}
+```
+
+DS2API 会：
+
+1. 提取当前对话中非静态的部分，向上游生成一份结构化压缩摘要。
+2. 如果摘要请求失败，使用本地保留首尾内容的降级摘要，避免压缩回合直接失败。
+3. 输出恰好一个 `type=compaction` 的 output item，并发送 `response.completed`。
+4. 同时通过 `encrypted_content` 保存版本化摘要、通过 `summary` 暴露可见摘要；
+   下一轮收到 `type=compaction` 时优先解码内部摘要，无法解码则使用 `summary`。
+
+同时兼容 `/v1/responses/compact`、`/responses/compact` 及 `/detail` 别名。
+流式压缩会先返回 `response.created` / `response.in_progress`，摘要生成超过
+15 秒时发送 SSE 心跳，避免 AiMaMi 或前置反代把长时间无数据误判为断流。
+
+## AiMaMi 中转
+
+当 Codex 通过 AiMaMi 智能路由访问 DS2API 时，链路为：
+
+```text
+Codex -> AiMaMi /codex/router/v1 -> DS2API
+```
+
+当前 AiMaMi 会用自己的模型族默认值生成 catalog，而不是直接透传 DS2API 的
+`context_window` 和 `auto_compact_token_limit`。它可能把 MiMo 标成 1,048,576、
+DeepSeek 标成 1,000,000，并输出 `auto_compact_token_limit=null`。这会让 Codex
+误以为离上下文上限很远。因此在 AiMaMi 中转设置中应覆盖模型上下文：
+
+- MiMo：48K–64K
+- DeepSeek：96K–128K
+- Kimi / GLM / 其他 Web 上游：96K–128K
+
+如果当前 AiMaMi 版本不支持压缩阈值，可在 `~/.codex/config.toml` 的 AiMaMi
+管理块之外设置一个保守回退值，例如当前使用 MiMo 时：
+
+```toml
+model_context_window = 64000
+model_auto_compact_token_limit = 40000
+```
+
+Sub2API 在相同 AiMaMi catalog 条件下能工作，关键原因是 Sub2API 实现了
+remote compaction v2，而不是因为它的 catalog 阈值更准确。本项目的对应实现
+见上节。修改后需要完全重启 AiMaMi、Codex，并为已经超限的旧线程新建任务。
+
 ## 错误与调度
 
 - `query is too long`、context length 等错误映射为

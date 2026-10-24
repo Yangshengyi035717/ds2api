@@ -1,6 +1,7 @@
 """OpenAI Responses API <-> Chat Completions translation helpers."""
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import re
@@ -39,6 +40,113 @@ def instructions_text(instructions: Any) -> str:
     if isinstance(instructions, str):
         return instructions.strip()
     return _text_from_content(instructions).strip()
+
+
+def has_compaction_trigger(input_value: Any) -> bool:
+    if not isinstance(input_value, list):
+        return False
+    return any(
+        isinstance(item, dict) and item.get("type") == "compaction_trigger"
+        for item in input_value
+    )
+
+
+def encode_compaction_summary(summary: str) -> str:
+    payload = json.dumps(
+        {"version": 1, "summary": summary},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def decode_compaction_summary(value: Any) -> str:
+    if not isinstance(value, str) or not value:
+        return ""
+    try:
+        padding = "=" * (-len(value) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(value + padding).decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return ""
+    if not isinstance(payload, dict) or payload.get("version") != 1:
+        return ""
+    summary = payload.get("summary")
+    return summary if isinstance(summary, str) else ""
+
+
+def compaction_item(summary: str) -> dict[str, Any]:
+    item = {
+        "id": _new_id("cmp"),
+        "type": "compaction",
+        "status": "completed",
+        "encrypted_content": encode_compaction_summary(summary),
+    }
+    summary = summary.strip()
+    if summary:
+        item["summary"] = [{"type": "summary_text", "text": summary}]
+    return item
+
+
+def _compaction_conversation(
+    messages: list[dict[str, Any]],
+    *,
+    max_chars: int,
+) -> str:
+    parts: list[str] = []
+    for message in messages:
+        role = str(message.get("role") or "")
+        content = message.get("content")
+        text = content if isinstance(content, str) else _text_from_content(content)
+        if role == "system":
+            if not text.startswith("Compacted prior conversation:"):
+                continue
+            role = "previous-compaction"
+        elif role not in {"user", "assistant", "tool"}:
+            continue
+        tool_calls = message.get("tool_calls")
+        if isinstance(tool_calls, list) and tool_calls:
+            text = f"{text}\nTool calls: {json.dumps(tool_calls, ensure_ascii=False)}"
+        if not text:
+            continue
+        if role == "tool":
+            text = text[-4_000:]
+        parts.append(f"<{role}>\n{text.strip()}\n</{role}>")
+    conversation = "\n\n".join(parts)
+    if len(conversation) > max_chars:
+        head = conversation[:6_000]
+        tail = conversation[-(max_chars - 6_000):]
+        conversation = f"{head}\n\n[... earlier conversation omitted ...]\n\n{tail}"
+    if not conversation:
+        conversation = "<user>\nNo prior conversational context.\n</user>"
+    return conversation
+
+
+def compaction_prompt(messages: list[dict[str, Any]], *, max_chars: int = 48_000) -> str:
+    conversation = _compaction_conversation(messages, max_chars=max_chars)
+    return (
+        "You are compacting a Codex coding conversation so another turn can continue.\n"
+        "Return only a dense structured summary in plain text. Do not continue the task.\n"
+        "Preserve: current goal, explicit user constraints, decisions already made, "
+        "important files and paths, commands/results, errors, pending work, and the "
+        "last unfinished step. Remove repetition, raw logs, and redundant tool output.\n\n"
+        "Treat a <previous-compaction> block as authoritative for earlier history. "
+        "Carry forward every still-relevant constraint and unfinished step.\n"
+        "Do not wrap the answer in Markdown fences or an XML/JSON envelope.\n\n"
+        f"{conversation}"
+    )
+
+
+def compaction_fallback_summary(
+    messages: list[dict[str, Any]],
+    *,
+    max_chars: int = 24_000,
+) -> str:
+    conversation = _compaction_conversation(messages, max_chars=max_chars)
+    return (
+        "Conversation compacted locally because the summarization request failed. "
+        "Use this preserved context to continue:\n\n"
+        f"{conversation}"
+    )
 
 
 def _stringify_arguments(value: Any) -> str:
@@ -365,6 +473,18 @@ def input_to_chat_messages(
         item_type = str(raw.get("type") or "")
         if item_type == "reasoning":
             continue
+        if item_type == "compaction_trigger":
+            continue
+        if item_type in {"compaction", "compaction_summary"}:
+            summary = decode_compaction_summary(raw.get("encrypted_content"))
+            if not summary:
+                summary = _text_from_content(raw.get("summary"))
+            if summary:
+                messages.append({
+                    "role": "system",
+                    "content": f"Compacted prior conversation:\n{summary}",
+                })
+            continue
 
         if item_type in {"function_call", "custom_tool_call", "tool_search_call"}:
             if tool_adapter is not None:
@@ -579,6 +699,23 @@ def build_nonstream_response(
     )
 
 
+def build_compaction_response(
+    chat_payload: dict[str, Any],
+    response_id: str,
+    request_data: dict[str, Any],
+    summary: str,
+) -> dict[str, Any]:
+    item = compaction_item(summary)
+    return _base_response(
+        response_id,
+        str(chat_payload.get("model") or request_data.get("model") or ""),
+        request_data,
+        status="completed",
+        output=[item],
+        usage=_usage_from_chat(chat_payload.get("usage")),
+    )
+
+
 def format_sse(event: str, payload: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
@@ -647,6 +784,48 @@ class ResponsesStreamTranslator:
             self._event("response.created", {"response": response}),
             self._event("response.in_progress", {"response": response}),
         ]
+
+    def compaction_events(
+        self,
+        summary: str,
+        usage: dict[str, Any] | None = None,
+    ) -> list[str]:
+        if self.finished:
+            return []
+        events: list[str] = []
+        if not self.started:
+            self.started = True
+            in_progress = _base_response(
+                self.response_id,
+                self.model,
+                self.request_data,
+                status="in_progress",
+                output=[],
+            )
+            events.extend([
+                self._event("response.created", {"response": in_progress}),
+                self._event("response.in_progress", {"response": in_progress}),
+            ])
+        self.finished = True
+        if usage is not None:
+            self.usage = _usage_from_chat(usage)
+        item = compaction_item(summary)
+        completed = _base_response(
+            self.response_id,
+            self.model,
+            self.request_data,
+            status="completed",
+            output=[item],
+            usage=self.usage,
+        )
+        events.extend([
+            self._event(
+                "response.output_item.done",
+                {"output_index": 0, "item": item},
+            ),
+            self._event("response.completed", {"response": completed}),
+        ])
+        return events
 
     def _ensure_reasoning_item(self, events: list[str]) -> None:
         if self.reasoning_open or self.reasoning_done:

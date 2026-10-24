@@ -4,6 +4,7 @@ Supports streaming, tool calling (via DSML prompt injection), content parts, and
 the thinking / search capabilities (DeepSeek merged its quick and expert modes,
 so ``thinking_enabled`` is the only model-behaviour switch left).
 """
+import asyncio
 import json
 import codecs
 import atexit
@@ -70,7 +71,11 @@ from anthropic_format import (
 from responses_format import (
     ResponsesStreamTranslator,
     ResponsesToolAdapter,
+    build_compaction_response as build_responses_compaction,
     build_nonstream_response as build_responses_nonstream,
+    compaction_fallback_summary,
+    compaction_prompt,
+    has_compaction_trigger,
     input_to_chat_messages,
     parse_chat_sse_event,
     requested_search,
@@ -1324,6 +1329,14 @@ def _codex_context_window(provider: str) -> int:
     }.get(provider, 128_000)
 
 
+def _codex_auto_compact_token_limit(provider: str, context_window: int) -> int:
+    # Codex needs an explicit threshold for custom models. Leave enough room
+    # for the next response and tool output while compacting well before the
+    # provider's hard context limit.
+    ratio = 5 / 8 if provider == PROVIDER_MIMO else 1 / 2
+    return max(16_000, min(64_000, int(context_window * ratio)))
+
+
 def _codex_model_manifest_entry(name: str) -> dict[str, Any]:
     info = _build_model_info(name)
     provider = info.provider or PROVIDER_DEEPSEEK
@@ -1366,14 +1379,17 @@ def _codex_model_manifest_entry(name: str) -> dict[str, Any]:
         "default_verbosity": None,
         "apply_patch_tool_type": None,
         "web_search_tool_type": "text",
-        "truncation_policy": {"mode": "bytes", "limit": 10_000},
+        "truncation_policy": {"mode": "tokens", "limit": 10_000},
         "supports_image_detail_original": False,
         "supports_parallel_tool_calls": False,
         "context_window": context_window,
         "max_context_window": context_window,
-        "auto_compact_token_limit": None,
+        "auto_compact_token_limit": _codex_auto_compact_token_limit(
+            provider,
+            context_window,
+        ),
         "comp_hash": None,
-        "effective_context_window_percent": 90,
+        "effective_context_window_percent": 85,
         "experimental_supported_tools": [],
         "input_modalities": ["text"],
         "supports_search_tool": False,
@@ -1922,6 +1938,10 @@ def _handle_nonstream(proxy_id: str, prompt: str, tools: list[ToolDef] | None = 
 
 @app.post("/v1/responses")
 @app.post("/responses")
+@app.post("/v1/responses/compact")
+@app.post("/responses/compact")
+@app.post("/v1/responses/compact/detail")
+@app.post("/responses/compact/detail")
 async def responses(req: ResponsesRequest, request: Request):
     """Minimal OpenAI Responses API compatibility over the Chat Completions core."""
     _check_api_auth(request)
@@ -1939,7 +1959,9 @@ async def responses(req: ResponsesRequest, request: Request):
         req.instructions,
         tool_adapter=tool_adapter,
     )
-    if not raw_messages:
+    force_compaction = "/responses/compact" in request.url.path
+    compaction_request = force_compaction or has_compaction_trigger(req.input)
+    if not raw_messages and not compaction_request:
         raise HTTPException(status_code=400, detail="Responses input must contain at least one message")
     try:
         messages = [ChatMessage(**message) for message in raw_messages]
@@ -1972,6 +1994,97 @@ async def responses(req: ResponsesRequest, request: Request):
     cache_key = _cache_key(request, conversation_id) if provider != PROVIDER_MIMO else None
     response_id = f"resp_{uuid.uuid4().hex}"
     request_data = req.model_dump()
+
+    if compaction_request:
+        async def summarize_compaction() -> tuple[str, dict[str, Any]]:
+            summary = compaction_fallback_summary(raw_messages)
+            chat_payload: dict[str, Any] = {
+                "model": public_model,
+                "usage": {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                },
+            }
+            try:
+                candidate = await run_in_threadpool(
+                    _handle_nonstream,
+                    response_id,
+                    compaction_prompt(raw_messages),
+                    None,
+                    model_type=model_type,
+                    thinking_mode=False,
+                    search_enabled=False,
+                    cache_key=None,
+                    provider=provider,
+                    model_name=public_model,
+                    upstream_model=upstream_model,
+                )
+                choice = (candidate.get("choices") or [{}])[0]
+                generated = str(
+                    (choice.get("message") or {}).get("content") or ""
+                ).strip()
+                if generated:
+                    summary = generated
+                    chat_payload = candidate
+            except Exception as exc:
+                log.warning(
+                    "compaction_summary_fallback",
+                    extra={"provider": provider, "error_type": type(exc).__name__},
+                )
+            return summary, chat_payload
+
+        if not req.stream:
+            summary, chat_payload = await summarize_compaction()
+            return JSONResponse(
+                build_responses_compaction(
+                    chat_payload,
+                    response_id,
+                    request_data,
+                    summary,
+                ),
+                headers=rate_headers,
+            )
+
+        translator = ResponsesStreamTranslator(
+            response_id,
+            public_model,
+            request_data,
+            tool_adapter=tool_adapter,
+        )
+
+        async def compact_stream():
+            for event in translator.initial_events():
+                yield event
+            summary_task = asyncio.create_task(summarize_compaction())
+            try:
+                while not summary_task.done():
+                    done, _ = await asyncio.wait(
+                        {summary_task},
+                        timeout=15,
+                    )
+                    if not done:
+                        yield ": keep-alive\n\n"
+                summary, chat_payload = await summary_task
+            finally:
+                if not summary_task.done():
+                    summary_task.cancel()
+            for event in translator.compaction_events(
+                summary,
+                chat_payload.get("usage"),
+            ):
+                yield event
+
+        return ReliableStreamingResponse(
+            compact_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+                **rate_headers,
+            },
+        )
 
     if not req.stream:
         chat_payload = await run_in_threadpool(_handle_nonstream,
