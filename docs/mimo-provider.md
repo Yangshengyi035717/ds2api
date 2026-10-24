@@ -139,3 +139,7 @@ npm --prefix "webui-new" run build
   MiMo 图片上传或多模态请求。
 - HAR 和静态资源不覆盖所有错误码、登录、退出或完整会话生命周期；未知错误
   仍会作为上游错误返回，不猜测其含义。
+- `mimo-v2.6-pro-ultraspeed-studio` 的 fastchat 通道可能在尚未输出内容时
+  返回“服务器繁忙”或中途断流。适配器默认自动降级到同账号的
+  `mimo-v2.6-pro`（`MIMO_ULTRASPEED_FALLBACK_MODEL` 可覆盖）；一旦已经开始
+  输出则不重试，避免重复正文或重复工具调用。

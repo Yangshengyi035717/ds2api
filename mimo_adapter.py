@@ -26,6 +26,10 @@ CREATE_URL = f"{BASE_URL}/open-apis/chat/conversation/save"
 COMPLETION_URL = f"{BASE_URL}/open-apis/react/chat"
 FASTCHAT_COMPLETION_URL = f"{BASE_URL}/fastchat/open-apis/bot/chat"
 FASTCHAT_MODELS = frozenset({"mimo-v2.6-pro-ultraspeed-studio"})
+ULTRASPEED_FALLBACK_MODEL = os.environ.get(
+    "MIMO_ULTRASPEED_FALLBACK_MODEL",
+    "mimo-v2.6-pro",
+).strip()
 IMPERSONATE = os.environ.get("MIMO_IMPERSONATE", "chrome150")
 REQUIRED_COOKIES = ("userId", "xiaomichatbot_serviceToken", "xiaomichatbot_ph")
 
@@ -330,27 +334,20 @@ class MimoAdapter:
         if data_lines:
             yield event_name, "\n".join(data_lines)
 
-    def chat_stream(
+    def _stream_completion(
         self,
         session_id: str,
         prompt: str,
+        completion_url: str,
+        upstream_model_name: str,
+        tagged_content: bool,
         *,
         model_type: str | None = None,
         thinking_enabled: bool = False,
         search_enabled: bool = False,
         parent_message_id: int | None = None,
         ready_out: dict | None = None,
-        upstream_model: str | None = None,
     ):
-        upstream_model_name = mimo_upstream_model(
-            upstream_model or mimo_model_name()
-        )
-        tagged_content = upstream_model_name.lower() in FASTCHAT_MODELS
-        completion_url = (
-            FASTCHAT_COMPLETION_URL
-            if tagged_content
-            else COMPLETION_URL
-        )
         response = self._request(
             completion_url,
             {
@@ -437,6 +434,75 @@ class MimoAdapter:
         finally:
             response.close()
             self._sync_cookies()
+
+    def chat_stream(
+        self,
+        session_id: str,
+        prompt: str,
+        *,
+        model_type: str | None = None,
+        thinking_enabled: bool = False,
+        search_enabled: bool = False,
+        parent_message_id: int | None = None,
+        ready_out: dict | None = None,
+        upstream_model: str | None = None,
+    ):
+        requested_model = mimo_upstream_model(
+            upstream_model or mimo_model_name()
+        )
+        tagged_content = requested_model.lower() in FASTCHAT_MODELS
+        attempts = [(
+            FASTCHAT_COMPLETION_URL if tagged_content else COMPLETION_URL,
+            requested_model,
+            tagged_content,
+        )]
+        if (
+            tagged_content
+            and ULTRASPEED_FALLBACK_MODEL
+            and ULTRASPEED_FALLBACK_MODEL.lower() != requested_model.lower()
+        ):
+            attempts.append((
+                COMPLETION_URL,
+                mimo_upstream_model(ULTRASPEED_FALLBACK_MODEL),
+                False,
+            ))
+
+        for index, (url, model, tagged) in enumerate(attempts):
+            buffered_reasoning: list[dict] = []
+            emitted_to_client = False
+            try:
+                for item in self._stream_completion(
+                    session_id,
+                    prompt,
+                    url,
+                    model,
+                    tagged,
+                    model_type=model_type,
+                    thinking_enabled=thinking_enabled,
+                    search_enabled=search_enabled,
+                    parent_message_id=parent_message_id,
+                    ready_out=ready_out,
+                ):
+                    if (
+                        not emitted_to_client
+                        and isinstance(item, dict)
+                        and item.get("__type") == "thinking"
+                    ):
+                        buffered_reasoning.append(item)
+                        continue
+                    if not emitted_to_client:
+                        for reasoning in buffered_reasoning:
+                            yield reasoning
+                        buffered_reasoning.clear()
+                        emitted_to_client = True
+                    yield item
+                if buffered_reasoning:
+                    for reasoning in buffered_reasoning:
+                        yield reasoning
+                return
+            except UpstreamTransientError:
+                if emitted_to_client or index == len(attempts) - 1:
+                    raise
 
     def chat(self, *args, **kwargs) -> tuple[str, str]:
         answer: list[str] = []

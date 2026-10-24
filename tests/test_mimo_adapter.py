@@ -224,6 +224,63 @@ def test_ultraspeed_uses_fastchat_and_splits_inline_think_tags(adapter):
     assert response.closed
 
 
+def test_ultraspeed_transient_failure_falls_back_to_regular_model(adapter):
+    adapter._client.responses.extend([
+        Response(status=503),
+        Response(events=[
+            ("message", {"messageType": "assistant", "content": "fallback ok"}),
+            ("finish", {"content": "[DONE]"}),
+        ]),
+    ])
+
+    assert adapter.chat(
+        "fresh-session",
+        "hi",
+        upstream_model="mimo-v2.6-pro-ultraspeed-studio",
+    ) == ("fallback ok", "")
+
+    assert [call[0] for call in adapter._client.calls] == [
+        module.FASTCHAT_COMPLETION_URL,
+        module.COMPLETION_URL,
+    ]
+    assert adapter._client.calls[-1][1]["json"]["modelConfig"]["model"] == (
+        module.ULTRASPEED_FALLBACK_MODEL
+    )
+
+
+def test_ultraspeed_falls_back_after_reasoning_only_failure(adapter):
+    adapter._client.responses.extend([
+        Response(events=[
+            ("message", {"type": "text", "content": "<think>buffered"}),
+        ]),
+        Response(events=[
+            ("message", {"messageType": "assistant", "content": "fallback ok"}),
+            ("finish", {"content": "[DONE]"}),
+        ]),
+    ])
+    assert adapter.chat(
+        "fresh-session",
+        "hi",
+        upstream_model="mimo-v2.6-pro-ultraspeed-studio",
+    ) == ("fallback ok", "")
+    assert len(adapter._client.calls) == 2
+
+
+def test_ultraspeed_does_not_fallback_after_answer_output(adapter):
+    adapter._client.responses.append(Response(events=[
+        ("message", {"type": "text", "content": "partial answer"}),
+    ]))
+    stream = adapter.chat_stream(
+        "fresh-session",
+        "hi",
+        upstream_model="mimo-v2.6-pro-ultraspeed-studio",
+    )
+    assert next(stream) == "partial answer"
+    with pytest.raises(UpstreamTransientError, match="before its finish"):
+        next(stream)
+    assert len(adapter._client.calls) == 1
+
+
 def test_ultraspeed_think_tags_can_span_sse_chunks(adapter):
     adapter._client.responses.append(Response(events=[
         ("message", {"type": "text", "content": "<thi"}),

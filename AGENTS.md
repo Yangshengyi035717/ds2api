@@ -44,6 +44,9 @@
   `POST /fastchat/open-apis/bot/chat`，推理以正文中的 `<think>...</think>`
   增量发送；适配器必须跨 chunk 识别标签，并把标签内容输出为 `reasoning_content`，
   不能把 `<think>` 或 NUL 分隔符返回给客户端。
+- UltraSpeed 的 fastchat 通道不可用时可能返回“服务器繁忙”；适配器在零输出时
+  自动降级到同账号 `mimo-v2.6-pro`，已产生任何 reasoning/正文后禁止重试，
+  避免重复内容和重复工具调用。
 - MiMo 保活调用只读 `POST /open-apis/chat/conversation/list`，仅验证登录和保存实际轮换的
   Cookie；尚未证明独立刷新 serviceToken 的协议，不宣称可无限续期。
   脱敏 HAR 可能没有 Cookie，需提示补充，不能用抓包中的会话 ID 或匿名状态当成功。

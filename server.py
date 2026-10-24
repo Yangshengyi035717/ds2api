@@ -153,7 +153,7 @@ MIMO_AUTH_MESSAGE = "MiMo 登录 Cookie 已失效，请重新导入"
 MIMO_CODEX_CONTEXT_WINDOW = 32_768
 MIMO_SAFE_PROMPT_TOKENS = 12_000
 MIMO_COMPACTION_PROMPT_CHARS = 24_000
-MIMO_COMPACTION_FALLBACK_CHARS = 12_000
+MIMO_COMPACTION_FALLBACK_CHARS = 8_000
 PROVIDER_SAFE_PROMPT_TOKENS = {
     PROVIDER_MIMO: MIMO_SAFE_PROMPT_TOKENS,
     "wenxin": 32_000,
@@ -1255,6 +1255,28 @@ def _compact_codex_messages(
                 message.content = _truncate_middle(
                     _extract_text(message.content),
                     12_000,
+                )
+        prompt = _build_prompt(summarized, tools, tool_choice)
+        compacted_tokens = count_text(prompt)
+    if compacted_tokens > safe_tokens:
+        for message in summarized:
+            if message.role == "assistant":
+                if isinstance(message.content, str):
+                    message.content = _truncate_middle(message.content, 2_000)
+                for tool_call in message.tool_calls or []:
+                    tool_call.function.arguments = _truncate_middle(
+                        tool_call.function.arguments,
+                        600,
+                    )
+            elif message.role == "tool":
+                message.content = _truncate_middle(
+                    _extract_text(message.content),
+                    400,
+                )
+            elif message.role == "user":
+                message.content = _truncate_middle(
+                    _extract_text(message.content),
+                    6_000,
                 )
         prompt = _build_prompt(summarized, tools, tool_choice)
         compacted_tokens = count_text(prompt)
