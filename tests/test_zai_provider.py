@@ -311,7 +311,7 @@ def test_zai_request_body_uses_distinct_message_ids():
         session_id="chat-id",
         prompt="hello",
         model="glm-5.3-flash",
-        thinking=False,
+        thinking=True,
         search=False,
         assistant_message_id="assistant-id",
         user_message_id="user-id",
@@ -321,6 +321,7 @@ def test_zai_request_body_uses_distinct_message_ids():
     assert body["current_user_message_id"] == "user-id"
     assert body["signature_prompt"] == "hello"
     assert body["model"] == "glm-5.3-flash"
+    assert body["features"]["reasoning_effort"] == "low"
     assert "request_id" not in body
 
 

@@ -73,6 +73,8 @@ GLM / z.ai 必须使用普通 `chat` 会话，而不能使用 `general_agent`。
 进入 Z.ai 自带云端 Agent 沙盒，获得 `/home/z/my-project`、Bash/Write 等另一套
 工具，并把 Codex 的本地工具说明当成不可信注入。普通 chat 模式保留 thinking，
 同时能正确执行 Codex 注入的 DSML 工具协议。
+z.ai 默认使用 `reasoning_effort=low`，避免高推理档在长文件任务中产生分钟级
+重复叙述；需要更高质量时可设置 `ZAI_REASONING_EFFORT=medium/high/max`。
 
 ## Remote compaction v2
 

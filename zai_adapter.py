@@ -41,6 +41,12 @@ SIGNATURE_WINDOW_MS = 5 * 60 * 1000
 FE_VERSION = os.environ.get("ZAI_FE_VERSION", "prod-fe-1.1.112")
 FE_QUERY_VERSION = os.environ.get("ZAI_FE_QUERY_VERSION", "0.0.1")
 IMPERSONATE = os.environ.get("ZAI_IMPERSONATE", "chrome150")
+REASONING_EFFORT = os.environ.get(
+    "ZAI_REASONING_EFFORT",
+    "low",
+).strip().lower()
+if REASONING_EFFORT not in {"low", "medium", "high", "max"}:
+    REASONING_EFFORT = "low"
 HEALTH_PATH = "/api/v1/chats/?page=1&type=all&channel=zai-web"
 CHAT_CREATE_PATH = "/api/v1/chats/new"
 
@@ -275,7 +281,7 @@ class ZaiAdapter:
                 "mcp_servers": [],
                 "enable_thinking": bool(thinking_enabled),
                 **(
-                    {"reasoning_effort": "max"}
+                    {"reasoning_effort": REASONING_EFFORT}
                     if thinking_enabled
                     else {}
                 ),
@@ -407,7 +413,7 @@ class ZaiAdapter:
                 "vlm_web_search_enable": False,
                 "vlm_website_mode": False,
                 "enable_thinking": bool(thinking),
-                **({"reasoning_effort": "max"} if thinking else {}),
+                **({"reasoning_effort": REASONING_EFFORT} if thinking else {}),
             },
             "variables": {
                 "{{USER_NAME}}": "",

@@ -39,6 +39,8 @@
 - z.ai / GLM 必须使用普通 `chat` 模式，禁止 `general_agent`：后者启用 Z.ai
   云端 Agent 沙盒及 `/home/z/my-project` 路径，并会拒绝 Codex 本地工具说明。
   普通 chat 仍支持 thinking，并能遵循需要文件动作的 DSML 工具调用。
+- z.ai 默认 `reasoning_effort=low`，可通过 `ZAI_REASONING_EFFORT` 调整为
+  `medium/high/max`；高推理档会造成长文件任务分钟级重复叙述。
 
 - 新增 `provider=mimo`（小米 MiMo Studio），公开模型为 `mimo-v2.6-pro`、
   `mimo-v2.6-flash` 和 `mimo-v2.6-pro-ultraspeed-studio`。账号、代理、导入、保活、
