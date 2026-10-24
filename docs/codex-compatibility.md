@@ -75,6 +75,13 @@ model_catalog_url = "https://dsapi.example.com/v1/models"
 会强制 `tool_choice=required`。DSML 提示同时声明列表中的工具是唯一可执行工具，
 要求忽略模型供应商自带的 search/scrape 等原生工具。
 
+强制工具调用期间，服务端不再把模型生成的长前言或重复计划文本发给客户端；
+只有真正的工具调用会进入响应。若模型最终没有返回工具调用，该轮以瞬态错误结束，
+由客户端重试，而不是把重复正文当成功结果。写文件工具虽然返回成功、但参数中仍含
+`__PART2__`、`__CONTINUE__`、`remaining code` 等显式占位标记时，下一轮仍保持
+`tool_choice=required`，直到后续工具调用把占位内容替换为完整实现。Codex 提示还会
+明确屏蔽 provider 原生 WebSearch/WebFetch，避免模型在不可用工具上循环。
+
 GLM / z.ai 必须使用普通 `chat` 会话，而不能使用 `general_agent`。后者会让模型
 进入 Z.ai 自带云端 Agent 沙盒，获得 `/home/z/my-project`、Bash/Write 等另一套
 工具，并把 Codex 的本地工具说明当成不可信注入。普通 chat 模式保留 thinking，

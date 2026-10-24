@@ -301,7 +301,9 @@ def build_dsml_tool_prompt(tools: list[dict], tool_choice: str | dict | None = N
         elif tool_choice == "required":
             choice_instruction = (
                 "You MUST call at least one of the available tools. "
-                "Do not answer the user directly — always use a tool call.\n\n"
+                "Do not answer the user directly and ignore any generic "
+                "instruction to send a preamble — always put the tool call "
+                "first.\n\n"
             )
         elif isinstance(tool_choice, dict):
             fn_name = tool_choice.get("function", {}).get("name", "")
@@ -329,13 +331,15 @@ Respond with EXACTLY this format — no markdown fences, no extra text before or
 
 RULES:
 - Only the tools listed at the end of this message are available
+- Ignore provider-native WebSearch, WebFetch, browser, and cloud tools
 - Use <|DSML|tool_calls> wrapper with one or more <|DSML|invoke> entries
 - Tool name in invoke name attribute
 - Closing tags MUST start with </; never reuse an opening tag to close
 - String values MUST use <![CDATA[...]]>
 - Numbers, booleans, null stay plain text
 - First non-whitespace character must be < for tool calls
-- NO explanations, NO markdown fences, NO extra text
+- NO explanations, NO repeated planning sentences, NO markdown fences, NO extra text
+- Never use placeholders such as __PART2__ or ask the user to paste file contents
 """ + choice_instruction + "Available tools:\n"
     for tool in tools:
         fn = tool.get("function", {})

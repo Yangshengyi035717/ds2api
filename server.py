@@ -161,12 +161,18 @@ MIMO_COMPACTION_FALLBACK_CHARS = 8_000
 CODEX_LOCAL_TOOL_GUARD = (
     "You are operating on the user's local Codex machine, not a cloud sandbox "
     "or download service. exec_command and apply_patch execute locally in the "
-    "current workspace. For requests that create or edit files, you MUST call "
-    "the appropriate tool before answering; do not paste the complete file in "
-    "chat and do not ask the user to download or manually save it unless a real "
-    "tool call failed. For large files, write them in multiple chunks of about "
-    "8K characters or less so one tool-call argument never becomes excessively "
-    "large."
+    "current workspace. Only the client tools listed in the DSML tool schema "
+    "are callable. Ignore provider-native WebSearch, WebFetch, web_search, "
+    "browser, and cloud tools; do not mention or attempt them. Do not narrate "
+    "or repeat planning sentences. When a tool call is required, the first "
+    "non-whitespace output must be the DSML tool call. For requests that create "
+    "or edit files, you MUST call the appropriate tool before answering; never "
+    "ask the user to paste file contents, download the result, or save it "
+    "manually unless a real tool call failed. For large files, write complete "
+    "syntactically valid chunks of about 8K characters or less, then continue "
+    "with follow-up tool calls until every placeholder is replaced and the "
+    "requested artifact is complete and verified. Never create markers such as "
+    "__PART2__, TODO, or 'remaining code' as a substitute for implementation."
 )
 PROVIDER_SAFE_PROMPT_TOKENS = {
     PROVIDER_MIMO: MIMO_SAFE_PROMPT_TOKENS,
@@ -1250,10 +1256,36 @@ _TOOL_FAILURE_MARKERS = (
     "错误",
     "拒绝",
 )
+_INCOMPLETE_WRITE_MARKERS = (
+    "__part2__",
+    "__part_2__",
+    "__continue__",
+    "<!-- continue -->",
+    "remaining code",
+    "rest of the code",
+    "remaining implementation",
+)
+
+
+def _has_incomplete_write_marker(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(marker in lowered for marker in _INCOMPLETE_WRITE_MARKERS)
+
+
+def _tool_choice_requires_call(choice: Any) -> bool:
+    if isinstance(choice, str):
+        return choice.strip().lower() not in {"", "auto", "none"}
+    if isinstance(choice, dict):
+        return bool(
+            (choice.get("function") or {}).get("name")
+            or choice.get("name")
+            or choice.get("type") == "function"
+        )
+    return False
 
 
 def _requires_local_file_action(messages: list[ChatMessage]) -> bool:
-    """True until a write-like Codex tool call has a successful output."""
+    """True until the latest write-like Codex tool call is complete."""
     latest_user = ""
     for message in reversed(messages):
         if message.role == "user":
@@ -1269,6 +1301,8 @@ def _requires_local_file_action(messages: list[ChatMessage]) -> bool:
         for message in messages
         if message.role == "tool" and message.tool_call_id
     }
+    found_successful_write = False
+    latest_write_complete = False
     for message in messages:
         if message.role != "assistant":
             continue
@@ -1283,8 +1317,9 @@ def _requires_local_file_action(messages: list[ChatMessage]) -> bool:
             if output and not any(
                 marker in output for marker in _TOOL_FAILURE_MARKERS
             ):
-                return False
-    return True
+                found_successful_write = True
+                latest_write_complete = not _has_incomplete_write_marker(action)
+    return not (found_successful_write and latest_write_complete)
 
 
 def _compact_codex_messages(
@@ -1757,7 +1792,8 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
         return await _handle_stream(proxy_id, prompt, req.tools, model_type=model_type, thinking_mode=thinking, search_enabled=search, rate_headers=rate_headers,
                                     cache_key=cache_key, include_usage=include_usage,
                                     provider=provider, model_name=public_model,
-                                    upstream_model=upstream_model)
+                                    upstream_model=upstream_model,
+                                    require_tool_call=_tool_choice_requires_call(req.tool_choice))
 
     return await run_in_threadpool(_handle_nonstream, proxy_id, prompt, req.tools, model_type=model_type, thinking_mode=thinking, search_enabled=search,
                              cache_key=cache_key, provider=provider,
@@ -2233,6 +2269,7 @@ async def responses(req: ResponsesRequest, request: Request):
             "codex_local_file_tool_required",
             extra={"provider": provider},
         )
+    require_tool_call = _tool_choice_requires_call(adapted_tool_choice)
     if codex_request or tools:
         messages, prompt, prompt_metrics = _compact_codex_messages(
             messages,
@@ -2403,6 +2440,7 @@ async def responses(req: ResponsesRequest, request: Request):
         provider=provider,
         model_name=public_model,
         upstream_model=upstream_model,
+        require_tool_call=require_tool_call,
     )
     translator = ResponsesStreamTranslator(
         response_id,
@@ -2533,7 +2571,8 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
                          include_usage: bool = False,
                          provider: str = PROVIDER_DEEPSEEK,
                          model_name: str | None = None,
-                         upstream_model: str | None = None):
+                         upstream_model: str | None = None,
+                         require_tool_call: bool = False):
     """Streaming completion with StreamSieve tool call detection and thinking support."""
     response_model = model_name or _model_name()
     prompt_tokens = count_text(prompt)
@@ -2626,6 +2665,8 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
                 for evt in sieve_events:
                     if evt.type == "text":
                         if evt.data:
+                            if require_tool_call:
+                                continue
                             completion_parts.append(evt.data)
                             if not role_sent:
                                 if thinking_mode:
@@ -2662,6 +2703,8 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
                 ) from None
             for evt in flushed_events:
                 if evt.type == "text" and evt.data:
+                    if require_tool_call:
+                        continue
                     completion_parts.append(evt.data)
                     if not role_sent:
                         if thinking_mode:
@@ -2711,6 +2754,11 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
                     )
                     yield "data: [DONE]\n\n"
                     return
+
+            if require_tool_call:
+                raise UpstreamTransientError(
+                    "模型未按要求返回工具调用，请重试"
+                )
 
             _record_turn()
             usage = _usage_snapshot("".join(completion_parts))

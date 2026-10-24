@@ -328,6 +328,98 @@ def test_streaming_repairs_malformed_view_image_tool_call(monkeypatch):
     )
 
 
+def test_required_tool_call_suppresses_repeated_preamble(monkeypatch):
+    repeated = "现在直接写入游戏文件（第一段）：" * 40
+    tool_text = (
+        "<|DSML|tool_calls>\n"
+        '  <|DSML|invoke name="apply_patch">\n'
+        '    <|DSML|parameter name="input"><![CDATA[*** Begin Patch\n'
+        "+complete game\n"
+        "*** End Patch]]></|DSML|parameter>\n"
+        "  </|DSML|invoke>\n"
+        "</|DSML|tool_calls>"
+    )
+
+    class FakeAdapter:
+        def chat_stream(self, session_id, prompt, **kwargs):
+            ready_out = kwargs["ready_out"]
+            ready_out["response_message_id"] = 2
+            ready_out["session_id"] = session_id
+            yield repeated
+            yield tool_text
+            yield {"__type": "status", "status": "FINISHED"}
+
+    class FakeAcquired:
+        acct = SimpleNamespace(id="account-test")
+        adapter = FakeAdapter()
+        parent_message_id = None
+
+        def prepare_prompt(self, prompt):
+            return prompt
+
+        def create_session(self, *args, **kwargs):
+            return "session-test"
+
+        def record_message_id(self, *args, **kwargs):
+            return None
+
+        def release(self):
+            return None
+
+    monkeypatch.setattr(
+        server,
+        "_acquire",
+        lambda cache_key=None, provider="deepseek": FakeAcquired(),
+    )
+    tools = [server.ToolDef(
+        type="function",
+        function=server.FunctionDef(
+            name="apply_patch",
+            description="Apply a local patch",
+            parameters={
+                "type": "object",
+                "properties": {"input": {"type": "string"}},
+                "required": ["input"],
+            },
+        ),
+    )]
+
+    async def collect() -> str:
+        response = await server._handle_stream(
+            "chatcmpl-required-tool",
+            "write a complete game",
+            tools,
+            require_tool_call=True,
+        )
+        chunks = []
+        async for chunk in response.body_iterator:
+            chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+        return "".join(chunks)
+
+    body = asyncio.run(collect())
+    events = [
+        json.loads(line.removeprefix("data: "))
+        for line in body.splitlines()
+        if line.startswith("data: ") and line != "data: [DONE]"
+    ]
+    content = "".join(
+        str((event.get("choices") or [{}])[0].get("delta", {}).get("content") or "")
+        for event in events
+    )
+    tool_deltas = [
+        tool
+        for event in events
+        for tool in (event.get("choices") or [{}])[0].get("delta", {}).get("tool_calls", [])
+    ]
+
+    assert content == ""
+    assert repeated not in body
+    assert any(
+        tool.get("function", {}).get("name") == "apply_patch"
+        for tool in tool_deltas
+    )
+
+
 def test_responses_nonstream_translation(compat_client, monkeypatch):
     client, key, _ = compat_client
 

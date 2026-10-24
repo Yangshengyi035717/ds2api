@@ -534,7 +534,10 @@ def test_codex_tool_guard_requires_local_file_operations():
 
     assert "operating on the user's local Codex machine" in prompt
     assert "MUST call the appropriate tool" in prompt
-    assert "multiple chunks" in prompt
+    assert "syntactically valid chunks" in prompt
+    assert "WebSearch" in prompt
+    assert "Do not narrate or repeat planning sentences" in prompt
+    assert "__PART2__" in prompt
 
 
 def test_local_file_action_stays_required_until_write_succeeds():
@@ -579,6 +582,63 @@ def test_local_file_action_stays_required_until_write_succeeds():
         ),
     ])
     assert not _requires_local_file_action(messages)
+
+
+def test_placeholder_write_keeps_local_file_action_required():
+    messages = [
+        server.ChatMessage(role="system", content="System instructions."),
+        server.ChatMessage(role="user", content="给我写一个完整的坦克大战游戏"),
+        server.ChatMessage(
+            role="assistant",
+            content="",
+            tool_calls=[server.ToolCall(
+                id="call_partial",
+                function=server.FunctionCall(
+                    name="apply_patch",
+                    arguments='{"input":"*** Begin Patch\\n//__PART2__\\n*** End Patch"}',
+                ),
+            )],
+        ),
+        server.ChatMessage(
+            role="tool",
+            tool_call_id="call_partial",
+            content="Applied patch successfully",
+        ),
+    ]
+
+    assert _requires_local_file_action(messages)
+
+    messages.extend([
+        server.ChatMessage(
+            role="assistant",
+            content="",
+            tool_calls=[server.ToolCall(
+                id="call_complete",
+                function=server.FunctionCall(
+                    name="apply_patch",
+                    arguments='{"input":"*** Begin Patch\\n+complete game code\\n*** End Patch"}',
+                ),
+            )],
+        ),
+        server.ChatMessage(
+            role="tool",
+            tool_call_id="call_complete",
+            content="Applied patch successfully",
+        ),
+    ])
+
+    assert not _requires_local_file_action(messages)
+
+
+def test_tool_choice_requires_call_only_for_forced_choices():
+    assert not server._tool_choice_requires_call("auto")
+    assert not server._tool_choice_requires_call("none")
+    assert not server._tool_choice_requires_call(None)
+    assert server._tool_choice_requires_call("required")
+    assert server._tool_choice_requires_call({
+        "type": "function",
+        "name": "exec_command",
+    })
 
 
 def test_codex_prompt_summarizes_older_dialogue_over_budget():
