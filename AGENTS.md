@@ -12,6 +12,15 @@
   账号，不能关闭正在另一个线程 next() 的生成器。详见
   [长流修复与验证](docs/stream-reliability.md)。
 
+- Codex Responses 兼容（2026-10-24）：Codex 请求通过 UA / `originator` /
+  `client_metadata` 识别。默认 `CODEX_TOOL_MODE=core`，避免把全部 MCP 工具灌入
+  上游提示；`all` 模式会摊平 namespace 工具并支持 custom/tool_search 项。
+  `/v1/models?client_version=...`（以及 Codex UA）返回 Codex 模型目录和真实
+  上下文预算。Codex 固定的 `web_search` 默认不映射为上游搜索。流式响应必须先
+  reasoning、后 message、再 tool，并实时发送工具参数与完整终态。上下文超限使用
+  `context_length_exceeded`，不能污染账号状态。完整协议与配置见
+  [Codex Responses 兼容](docs/codex-compatibility.md)。
+
 - 新增 `provider=mimo`（小米 MiMo Studio），公开模型为 `mimo-v2.6-pro`、
   `mimo-v2.6-flash` 和 `mimo-v2.6-pro-ultraspeed-studio`。账号、代理、导入、保活、
   API 文档和 Playground 均按 provider 隔离接入。

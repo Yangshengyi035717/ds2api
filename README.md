@@ -32,6 +32,7 @@
 - **小米 MiMo 兼容** — MiMo Studio Cookie 账号池、Pro / Flash 对话与只读协议保活
 - **代理池** — 一号一代理、出口绑定、连通性检测与加密存储
 - **Sub2API 上游适配** — 富模型目录、Provider Manifest、价格/倍率配置和同步脚本
+- **Codex Responses 兼容** — 工具生命周期、namespace/custom 工具、模型目录与上下文预算
 - **客户端限流** — 滑动窗口，按 API key 和 IP 独立计数；响应头 `X-RateLimit-*`
 - **使用量统计** — 基于 tiktoken 估算的 prompt / completion / total tokens
 - **管理面板** — 内置 Web 管理界面，支持请求统计、账号池管理（多账号轮询/持久化增删改查/重登录）
@@ -448,6 +449,46 @@ WebUI「代理池」支持 HTTP / HTTPS / SOCKS4 / SOCKS5 / SOCKS5H 代理：
 - 「检测」会通过代理访问 `PROXY_CHECK_URL`（默认 `https://chat.deepseek.com/`）
 
 建议一个账号长期使用一个稳定、地域一致的专用出口，不要按请求轮换代理。
+
+---
+
+## Codex CLI / Codex Desktop 接入
+
+Codex 必须使用 Responses 协议。推荐在 `~/.codex/config.toml` 中配置：
+
+```toml
+model = "deepseek-chat"
+model_provider = "ds2api"
+
+[model_providers.ds2api]
+name = "DS2API"
+base_url = "https://dsapi.example.com/v1"
+model_catalog_url = "https://dsapi.example.com/v1/models"
+env_key = "DS2API_API_KEY"
+wire_api = "responses"
+requires_openai_auth = false
+supports_websockets = false
+```
+
+然后通过环境变量提供客户端 API Key：
+
+```powershell
+$env:DS2API_API_KEY = "<DS2API 客户端 API Key>"
+codex
+```
+
+Codex 兼容行为：
+
+- `model_catalog_url` 返回 Codex 模型目录，包含上下文窗口和工具能力，
+  避免客户端使用错误的 fallback 元数据。
+- 默认 `CODEX_TOOL_MODE=core`，只暴露编码必需的 function/custom 工具，
+  避免一次发送全部 MCP/namespace 工具导致上下文超限。
+- 可选 `all` 会摊平 namespace 子工具并在响应中还原 namespace。
+- Codex 固定声明的 `web_search` 默认不会强制开启上游联网搜索。
+- reasoning、message、function/custom tool 按严格生命周期输出；
+  工具参数和终态事件不会等到整条流结束才发送。
+- 账号忙时短暂等待空闲账号；上下文超限映射为非重试的
+  `context_length_exceeded`，不会把账号错误标记为失效。
 
 ---
 

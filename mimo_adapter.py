@@ -11,7 +11,12 @@ from curl_cffi import requests as cffi_requests
 from curl_cffi.requests.exceptions import RequestException
 from upstream_http import stream_timeout
 
-from adapter import RateLimitError, UpstreamHintError, UpstreamTransientError
+from adapter import (
+    RateLimitError,
+    UpstreamContextLimitError,
+    UpstreamHintError,
+    UpstreamTransientError,
+)
 from provider_registry import mimo_model_name, mimo_upstream_model
 
 BASE_URL = "https://aistudio.xiaomimimo.com"
@@ -194,6 +199,19 @@ class MimoAdapter:
     ) -> None:
         text = self._safe_message(message)
         lowered = text.lower()
+        if any(
+            marker in lowered
+            for marker in (
+                "query is too long",
+                "input is too long",
+                "context length",
+                "maximum context",
+                "prompt too long",
+                "请求过长",
+                "上下文过长",
+            )
+        ):
+            raise UpstreamContextLimitError(text or "MiMo context limit exceeded")
         if str(code) in {"401", "403"} or any(
             marker in lowered for marker in ("未登录", "登录过期", "登录失效", "unauthorized")
         ):

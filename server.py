@@ -38,6 +38,7 @@ from streaming import HeartbeatStream, ReliableStreamingResponse, run_owned_setu
 from adapter import (
     DeepSeekAdapter,
     UpstreamEmptyError,
+    UpstreamContextLimitError,
     UpstreamHintError,
     UpstreamTransientError,
     RateLimitError,
@@ -68,12 +69,12 @@ from anthropic_format import (
 )
 from responses_format import (
     ResponsesStreamTranslator,
+    ResponsesToolAdapter,
     build_nonstream_response as build_responses_nonstream,
     input_to_chat_messages,
     parse_chat_sse_event,
     requested_search,
     requested_thinking,
-    tools_to_chat_tools,
 )
 from logger import get_logger, configure_from_env
 from crypto import is_enabled as crypto_is_enabled
@@ -138,6 +139,11 @@ MODEL_CREATED_AT = int(os.environ.get("MODEL_CREATED_AT", str(int(time.time())))
 #: Seconds a parent gateway should wait before retrying after an upstream
 #: transient outage ('服务器暂时不可用' / generation_err).
 TRANSIENT_RETRY_AFTER_SECS = os.environ.get("DEEPSEEK_TRANSIENT_RETRY_AFTER", "5")
+try:
+    ACCOUNT_WAIT_SECS = float(os.environ.get("UPSTREAM_ACCOUNT_WAIT_TIMEOUT", "15"))
+except ValueError:
+    ACCOUNT_WAIT_SECS = 15.0
+ACCOUNT_WAIT_SECS = min(120.0, max(0.0, ACCOUNT_WAIT_SECS))
 MIMO_AUTH_MESSAGE = "MiMo 登录 Cookie 已失效，请重新导入"
 
 
@@ -590,6 +596,10 @@ class ResponsesRequest(BaseModel):
     store: Optional[bool] = False
     parallel_tool_calls: Optional[bool] = True
     truncation: Optional[str] = "disabled"
+    include: Optional[list[str]] = None
+    prompt_cache_key: Optional[str] = None
+    client_metadata: Optional[dict[str, Any]] = None
+    service_tier: Optional[str] = None
 
 
 class ModelInfo(BaseModel):
@@ -999,21 +1009,36 @@ def _acquire(
         # Keep a cached conversation on its creating account whenever it is
         # available.  If it is busy/error, safely start a fresh conversation
         # on the next idle account rather than crossing credentials.
-        acct = (
-            pool.acquire_by_id(cached.account_id, provider=wanted)
-            if cached and cached.account_id
-            else None
-        )
-        if acct is None:
-            acct = pool.acquire(provider=wanted)
+        deadline = time.monotonic() + ACCOUNT_WAIT_SECS
+        waited = False
+        while True:
+            acct = (
+                pool.acquire_by_id(cached.account_id, provider=wanted)
+                if cached and cached.account_id
+                else None
+            )
+            if acct is None:
+                acct = pool.acquire(provider=wanted)
+            if acct is not None:
+                break
+            if pool.count(wanted) == 0 or time.monotonic() >= deadline:
+                break
+            waited = True
+            time.sleep(0.1)
     except Exception:
         _UPSTREAM_LIMITER.release()
         raise
     if acct is None:
         _UPSTREAM_LIMITER.release()
+        if waited:
+            log.warning(
+                "upstream_account_wait_timeout",
+                extra={"provider": wanted, "timeout_secs": ACCOUNT_WAIT_SECS},
+            )
         raise HTTPException(
             status_code=503,
             detail=f"No {provider_label(provider)} accounts available; add one or wait for a busy account",
+            headers={"Retry-After": TRANSIENT_RETRY_AFTER_SECS},
         )
     return AcquiredAccount(acct, cache_key=cache_key)
 
@@ -1242,6 +1267,135 @@ def _parse_response_for_tools(text: str, tool_names: list[str]) -> tuple[list[di
     return parse_dsml_tool_calls(text, tool_names)
 
 
+def _env_truthy(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_codex_request(request: Request, payload: ResponsesRequest) -> bool:
+    indicators = [
+        request.headers.get("user-agent", ""),
+        request.headers.get("originator", ""),
+        json.dumps(payload.client_metadata or {}, ensure_ascii=False),
+    ]
+    return any("codex" in str(value).lower() for value in indicators)
+
+
+def _codex_tool_mode() -> str:
+    mode = os.environ.get("CODEX_TOOL_MODE", "core").strip().lower()
+    return mode if mode in {"core", "all", "none"} else "core"
+
+
+def _codex_allowed_tools() -> set[str]:
+    raw = os.environ.get("CODEX_ALLOWED_TOOLS", "")
+    return {item.strip() for item in raw.split(",") if item.strip()}
+
+
+def _is_context_limit_error(error: Exception) -> bool:
+    if isinstance(error, UpstreamContextLimitError):
+        return True
+    message = str(error).lower()
+    return any(
+        marker in message
+        for marker in (
+            "query is too long",
+            "input is too long",
+            "context length",
+            "maximum context",
+            "prompt too long",
+            "请求过长",
+            "上下文过长",
+        )
+    )
+
+
+def _codex_context_window(provider: str) -> int:
+    return {
+        PROVIDER_MIMO: 64_000,
+        "wenxin": 64_000,
+        "deepseek": 128_000,
+        "zai": 128_000,
+        "kimi": 128_000,
+        "qianwen": 128_000,
+        "hunyuan": 128_000,
+        "doubao": 128_000,
+    }.get(provider, 128_000)
+
+
+def _codex_model_manifest_entry(name: str) -> dict[str, Any]:
+    info = _build_model_info(name)
+    provider = info.provider or PROVIDER_DEEPSEEK
+    context_window = _codex_context_window(provider)
+    return {
+        "slug": info.id,
+        "display_name": info.display_name or info.id,
+        "description": f"{provider_label(provider)} model routed through DS2API.",
+        "default_reasoning_level": "none",
+        "supported_reasoning_levels": [{
+            "effort": "none",
+            "description": "Direct responses without an explicit reasoning budget.",
+        }],
+        "shell_type": "unified_exec",
+        "visibility": "list",
+        "supported_in_api": True,
+        "priority": 50,
+        "additional_speed_tiers": [],
+        "service_tiers": [],
+        "default_service_tier": None,
+        "availability_nux": None,
+        "upgrade": None,
+        "model_messages": {
+            "instructions_template": "",
+            "instructions_variables": None,
+            "approvals": None,
+            "collaboration_modes": None,
+            "auto_review": None,
+            "permissions": None,
+            "multi_agent": None,
+            "token_budget": None,
+            "guardian_v2": None,
+        },
+        "include_skills_usage_instructions": False,
+        "include_plugin_usage_instructions": False,
+        "include_apps_usage_instructions": False,
+        "supports_reasoning_summary_parameter": True,
+        "default_reasoning_summary": "auto",
+        "support_verbosity": False,
+        "default_verbosity": None,
+        "apply_patch_tool_type": None,
+        "web_search_tool_type": "text",
+        "truncation_policy": {"mode": "bytes", "limit": 10_000},
+        "supports_image_detail_original": False,
+        "supports_parallel_tool_calls": False,
+        "context_window": context_window,
+        "max_context_window": context_window,
+        "auto_compact_token_limit": None,
+        "comp_hash": None,
+        "effective_context_window_percent": 90,
+        "experimental_supported_tools": [],
+        "input_modalities": ["text"],
+        "supports_search_tool": False,
+        "use_responses_lite": False,
+        "node_repl_auto_review_required": False,
+        "node_repl_disabled": False,
+        "auto_review_model_override": None,
+        "model_specialty": None,
+        "tool_mode": None,
+        "multi_agent_version": None,
+    }
+
+
+def _build_codex_models_manifest() -> dict[str, Any]:
+    return {
+        "models": [
+            _codex_model_manifest_entry(name)
+            for name in _available_model_names()
+        ],
+    }
+
+
 # ---- Endpoints ----
 
 @app.get("/health")
@@ -1253,6 +1407,19 @@ async def health():
 async def list_models(request: Request):
     _check_api_auth(request)
     rate_headers = _check_rate_limit(request)
+    codex_catalog = (
+        "codex" in request.headers.get("user-agent", "").lower()
+        or "codex" in request.headers.get("originator", "").lower()
+        or request.query_params.get("format") == "codex"
+    )
+    if codex_catalog:
+        return JSONResponse(
+            _build_codex_models_manifest(),
+            headers={
+                **rate_headers,
+                "Cache-Control": "no-cache",
+            },
+        )
     names = _available_model_names()
     return JSONResponse(
         ModelList(data=[_build_model_info(name) for name in names]).model_dump(),
@@ -1443,6 +1610,11 @@ def _anthropic_nonstream(msg_id: str, prompt: str, tool_names: list[str],
                                   ready_out.get("session_id"),
                                   full_prompt=prompt)
         get_stats().record(response_model, (time.time() - t0) * 1000)
+    except UpstreamContextLimitError as e:
+        get_stats().record(response_model, 0, success=False)
+        if cache_key:
+            SESSION_CACHE.invalidate(cache_key)
+        raise HTTPException(status_code=413, detail=str(e)) from None
     except RateLimitError as e:
         # Match the OpenAI endpoint: upstream throttling is a client-visible
         # 429, not an opaque Anthropic 500. This includes account mute errors
@@ -1469,6 +1641,10 @@ def _anthropic_nonstream(msg_id: str, prompt: str, tool_names: list[str],
         )
     except UpstreamHintError as e:
         get_stats().record(response_model, 0, success=False)
+        if _is_context_limit_error(e):
+            if cache_key:
+                SESSION_CACHE.invalidate(cache_key)
+            raise HTTPException(status_code=413, detail=str(e)) from None
         pool.mark_error(acq.acct, str(e))
         raise HTTPException(status_code=502, detail=str(e))
     except UpstreamEmptyError:
@@ -1625,6 +1801,11 @@ def _handle_nonstream(proxy_id: str, prompt: str, tools: list[ToolDef] | None = 
         completion_tokens = count_text(content) + count_text(thinking)
         get_stats().record(response_model, (time.time() - t0) * 1000,
                            prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
+    except UpstreamContextLimitError as e:
+        get_stats().record(response_model, 0, success=False)
+        if cache_key:
+            SESSION_CACHE.invalidate(cache_key)
+        raise HTTPException(status_code=413, detail=str(e)) from None
     except RateLimitError as e:
         # Rate limiting is a transient upstream state, not a credential
         # problem — do NOT mark the account as errored, or the pool would
@@ -1650,6 +1831,10 @@ def _handle_nonstream(proxy_id: str, prompt: str, tools: list[ToolDef] | None = 
         )
     except UpstreamHintError as e:
         get_stats().record(response_model, 0, success=False)
+        if _is_context_limit_error(e):
+            if cache_key:
+                SESSION_CACHE.invalidate(cache_key)
+            raise HTTPException(status_code=413, detail=str(e)) from None
         pool.mark_error(acq.acct, str(e))
         raise HTTPException(status_code=502, detail=str(e))
     except UpstreamEmptyError as e:
@@ -1742,12 +1927,23 @@ async def responses(req: ResponsesRequest, request: Request):
     _check_api_auth(request)
     rate_headers = _check_rate_limit(request)
 
-    raw_messages = input_to_chat_messages(req.input, req.instructions)
+    codex_request = _is_codex_request(request, req)
+    tool_adapter = ResponsesToolAdapter(
+        req.tools,
+        codex_mode=codex_request,
+        tool_mode=_codex_tool_mode() if codex_request else "all",
+        allowed_tools=_codex_allowed_tools() if codex_request else None,
+    )
+    raw_messages = input_to_chat_messages(
+        req.input,
+        req.instructions,
+        tool_adapter=tool_adapter,
+    )
     if not raw_messages:
         raise HTTPException(status_code=400, detail="Responses input must contain at least one message")
     try:
         messages = [ChatMessage(**message) for message in raw_messages]
-        tools = [ToolDef(**tool) for tool in tools_to_chat_tools(req.tools)]
+        tools = [ToolDef(**tool) for tool in tool_adapter.chat_tools]
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Invalid Responses payload: {exc}")
 
@@ -1758,9 +1954,15 @@ async def responses(req: ResponsesRequest, request: Request):
     model_type, thinking, search = resolve_model_controls(
         decision,
         req_thinking=requested_thinking(req.reasoning),
-        req_search=requested_search(req.tools),
+        req_search=(requested_search(req.tools) and (
+            not codex_request or _env_truthy("CODEX_WEB_SEARCH_ENABLED", False)
+        )),
     )
-    prompt = _build_prompt(messages, tools or None, req.tool_choice)
+    prompt = _build_prompt(
+        messages,
+        tools or None,
+        tool_adapter.adapt_tool_choice(req.tool_choice),
+    )
 
     conversation_id = request.headers.get("X-Conversation-Id", "").strip()
     if conversation_id:
@@ -1785,7 +1987,12 @@ async def responses(req: ResponsesRequest, request: Request):
             upstream_model=upstream_model,
         )
         return JSONResponse(
-            build_responses_nonstream(chat_payload, response_id, request_data),
+            build_responses_nonstream(
+                chat_payload,
+                response_id,
+                request_data,
+                tool_adapter=tool_adapter,
+            ),
             headers=rate_headers,
         )
 
@@ -1802,7 +2009,12 @@ async def responses(req: ResponsesRequest, request: Request):
         model_name=public_model,
         upstream_model=upstream_model,
     )
-    translator = ResponsesStreamTranslator(response_id, public_model, request_data)
+    translator = ResponsesStreamTranslator(
+        response_id,
+        public_model,
+        request_data,
+        tool_adapter=tool_adapter,
+    )
 
     def upstream_error_event(error: dict) -> str:
         message = str(error.get("message") or "Upstream error")
@@ -1897,6 +2109,10 @@ async def _prepare_stream_account(prompt, cache_key, provider, response_model,
         except Exception as exc:
             try:
                 get_stats().record(response_model, 0, success=False, prompt_tokens=prompt_tokens)
+                if _is_context_limit_error(exc):
+                    if cache_key:
+                        SESSION_CACHE.invalidate(cache_key)
+                    raise HTTPException(status_code=413, detail=str(exc)) from None
                 if isinstance(exc, (RequestException, UpstreamTransientError, UpstreamEmptyError, RateLimitError)):
                     if cache_key:
                         SESSION_CACHE.invalidate(cache_key)
@@ -2109,7 +2325,13 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
             message = MIMO_AUTH_MESSAGE if isinstance(e, MimoAuthError) else str(e)
             # Rate limit / transient empty responses are not credential
             # failures — keep the account usable instead of draining the pool.
-            if isinstance(e, (RateLimitError, UpstreamEmptyError, UpstreamTransientError)):
+            context_limit = _is_context_limit_error(e)
+            if isinstance(e, (
+                UpstreamContextLimitError,
+                RateLimitError,
+                UpstreamEmptyError,
+                UpstreamTransientError,
+            )) or context_limit:
                 if cache_key:
                     SESSION_CACHE.invalidate(cache_key)
             else:
@@ -2140,6 +2362,8 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
                 ),
             ):
                 err_type, err_code, retry_after = "authentication_error", "invalid_api_key", None
+            elif context_limit:
+                err_type, err_code, retry_after = "invalid_request_error", "context_length_exceeded", None
             elif isinstance(e, UpstreamTransientError):
                 err_type, err_code, retry_after = "api_error", "upstream_temporarily_unavailable", TRANSIENT_RETRY_AFTER_SECS
             elif isinstance(e, UpstreamEmptyError):

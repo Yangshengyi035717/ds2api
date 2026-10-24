@@ -140,6 +140,20 @@ function sub2apiAccount(modelName: string) {
 }`
 }
 
+function codexConfig(modelName: string) {
+  return `model = "${modelName}"
+model_provider = "ds2api"
+
+[model_providers.ds2api]
+name = "DS2API"
+base_url = "${ORIGIN}/v1"
+model_catalog_url = "${ORIGIN}/v1/models"
+env_key = "DS2API_API_KEY"
+wire_api = "responses"
+requires_openai_auth = false
+supports_websockets = false`
+}
+
 function MethodPath({ method, path }: { method: 'GET' | 'POST'; path: string }) {
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 px-3 py-2">
@@ -339,6 +353,7 @@ export default function ApiDocsPage() {
               <TabsTrigger value="wenxin">文心</TabsTrigger>
               <TabsTrigger value="doubao">豆包</TabsTrigger>
               <TabsTrigger value="mimo">小米 MiMo</TabsTrigger>
+              <TabsTrigger value="codex">Codex</TabsTrigger>
               <TabsTrigger value="sub2api">Sub2API</TabsTrigger>
               <TabsTrigger value="errors">错误与限制</TabsTrigger>
             </TabsList>
@@ -696,6 +711,39 @@ export default function ApiDocsPage() {
                     }, null, 2)}
                     title="请求体（占位示例）"
                     language="json"
+                  />
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="codex" className="space-y-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Codex CLI / Codex Desktop</CardTitle>
+                  <CardDescription>
+                    使用 Responses 协议、远程模型目录和客户端 API Key。
+                    DS2API 会自动启用只包含核心编码工具的兼容模式。
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <CodeBlock
+                    code={codexConfig(modelName)}
+                    title="~/.codex/config.toml"
+                    language="toml"
+                  />
+                  <div>
+                    <FieldRow name="model_catalog_url" description="让 Codex 读取上下文窗口和工具能力，避免 Unknown model 回退到错误的上下文预算。" />
+                    <FieldRow name="wire_api" description="必须为 responses；DS2API 同时提供 /v1/responses 和 /responses。" />
+                    <FieldRow name="env_key" description="通过环境变量提供 DS2API 客户端 API Key，不要把 Key 写入配置文件。" />
+                    <FieldRow name="supports_websockets" description="非 OpenAI 网关应设为 false，使用 HTTP/SSE。" />
+                    <FieldRow name="tool mode" description="服务端 CODEX_TOOL_MODE=core 默认只暴露 exec_command、write_stdin、view_image 等必要工具，降低上下文超限和上游并发。" />
+                    <FieldRow name="web_search" description="Codex 会固定声明 web_search；默认不映射为上游联网搜索，避免每个请求都触发搜索。" />
+                  </div>
+                  <CodeBlock
+                    code={`$env:DS2API_API_KEY="YOUR_API_KEY"
+codex`}
+                    title="PowerShell"
+                    language="powershell"
                   />
                 </CardContent>
               </Card>

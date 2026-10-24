@@ -169,10 +169,10 @@ def test_reasoning_is_immediate_and_indices_and_sequences_are_stable():
     events = payloads(initial + first + second + translator.final_events())
     assert [event["sequence_number"] for event in events] == list(range(len(events)))
     output = events[-1]["response"]["output"]
-    assert [item["type"] for item in output] == ["message", "reasoning", "function_call"]
-    assert output[1]["summary"][0]["text"] == "think more"
+    assert [item["type"] for item in output] == ["reasoning", "message", "function_call"]
+    assert output[0]["summary"][0]["text"] == "think more"
     reasoning_events = [event for event in events if event["type"].startswith("response.reasoning_summary")]
-    assert all(event["item_id"] == output[1]["id"] and event["output_index"] == 1 for event in reasoning_events)
+    assert all(event["item_id"] == output[0]["id"] and event["output_index"] == 0 for event in reasoning_events)
     assert translator.final_events() == []
 
 

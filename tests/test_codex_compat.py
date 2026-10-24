@@ -1,0 +1,377 @@
+"""Codex-specific Responses tool and SSE compatibility regressions."""
+from __future__ import annotations
+
+import json
+import asyncio
+import time
+
+import pytest
+from fastapi import Request
+from fastapi.responses import StreamingResponse
+from types import SimpleNamespace
+
+from adapter import UpstreamContextLimitError
+from mimo_adapter import MimoAdapter
+from responses_format import (
+    ResponsesStreamTranslator,
+    ResponsesToolAdapter,
+    input_to_chat_messages,
+    tools_to_chat_tools,
+)
+from server import _is_context_limit_error
+import server
+
+
+RAW_TOOLS = [
+    {
+        "type": "function",
+        "name": "exec_command",
+        "description": "Run a command",
+        "parameters": {"type": "object", "properties": {"cmd": {"type": "string"}}},
+    },
+    {
+        "type": "namespace",
+        "name": "multi_agent_v1",
+        "children": [{
+            "type": "function",
+            "name": "spawn_agent",
+            "parameters": {"type": "object", "properties": {}},
+        }],
+    },
+    {
+        "type": "custom",
+        "name": "apply_patch",
+        "description": "Apply a patch",
+    },
+    {"type": "web_search"},
+]
+
+
+def event_payloads(events):
+    return [
+        json.loads(line[6:])
+        for event in events
+        for line in event.splitlines()
+        if line.startswith("data: ")
+    ]
+
+
+def test_codex_core_mode_keeps_only_essential_function_and_custom_tools():
+    adapter = ResponsesToolAdapter(
+        RAW_TOOLS,
+        codex_mode=True,
+        tool_mode="core",
+    )
+    names = [tool["function"]["name"] for tool in adapter.chat_tools]
+    assert names == ["exec_command", "apply_patch"]
+
+
+def test_all_mode_flattens_namespace_and_restores_namespace_item():
+    adapter = ResponsesToolAdapter(RAW_TOOLS, codex_mode=True, tool_mode="all")
+    names = [tool["function"]["name"] for tool in adapter.chat_tools]
+    assert "multi_agent_v1__spawn_agent" in names
+    item = adapter.restore_tool_call(
+        "multi_agent_v1__spawn_agent",
+        '{"task":"inspect"}',
+        "call_agent",
+    )
+    assert item["type"] == "function_call"
+    assert item["name"] == "spawn_agent"
+    assert item["namespace"] == "multi_agent_v1"
+    assert item["call_id"] == "call_agent"
+
+
+def test_custom_tool_round_trips_through_chat_history_and_response_item():
+    adapter = ResponsesToolAdapter(RAW_TOOLS, codex_mode=True, tool_mode="all")
+    messages = input_to_chat_messages(
+        [
+            {
+                "type": "custom_tool_call",
+                "call_id": "call_patch",
+                "name": "apply_patch",
+                "input": "*** Begin Patch",
+            },
+            {
+                "type": "custom_tool_call_output",
+                "call_id": "call_patch",
+                "output": "Done",
+            },
+        ],
+        tool_adapter=adapter,
+    )
+    call = messages[0]["tool_calls"][0]
+    assert call["function"]["name"] == "apply_patch"
+    assert json.loads(call["function"]["arguments"]) == {"input": "*** Begin Patch"}
+    assert messages[1] == {
+        "role": "tool",
+        "tool_call_id": "call_patch",
+        "content": "Done",
+    }
+
+    item = adapter.restore_tool_call(
+        "apply_patch",
+        '{"input":"*** Begin Patch"}',
+        "call_patch",
+    )
+    assert item["type"] == "custom_tool_call"
+    assert item["name"] == "apply_patch"
+    assert item["input"] == "*** Begin Patch"
+
+
+def test_namespace_history_is_lowered_to_flattened_chat_name():
+    adapter = ResponsesToolAdapter(RAW_TOOLS, codex_mode=True, tool_mode="all")
+    messages = input_to_chat_messages(
+        [{
+            "type": "function_call",
+            "call_id": "call_ns",
+            "name": "spawn_agent",
+            "namespace": "multi_agent_v1",
+            "arguments": "{}",
+        }],
+        tool_adapter=adapter,
+    )
+    assert messages[0]["tool_calls"][0]["function"]["name"] == (
+        "multi_agent_v1__spawn_agent"
+    )
+
+
+def test_backward_tools_function_wrapper_still_supports_flat_function_tools():
+    tools = tools_to_chat_tools([RAW_TOOLS[0]])
+    assert tools[0]["function"]["name"] == "exec_command"
+
+
+def test_stream_opens_reasoning_then_message_then_live_tool_call():
+    adapter = ResponsesToolAdapter(
+        [RAW_TOOLS[0]],
+        codex_mode=True,
+        tool_mode="core",
+    )
+    translator = ResponsesStreamTranslator(
+        "resp_codex",
+        "deepseek-chat",
+        {},
+        tool_adapter=adapter,
+    )
+    events = event_payloads(translator.initial_events())
+    assert [event["type"] for event in events] == [
+        "response.created",
+        "response.in_progress",
+    ]
+
+    events += event_payloads(translator.feed_chat_chunk({
+        "choices": [{"delta": {"reasoning_content": "think"}}],
+    }))
+    events += event_payloads(translator.feed_chat_chunk({
+        "choices": [{"delta": {"content": "answer"}}],
+    }))
+    events += event_payloads(translator.feed_chat_chunk({
+        "choices": [{"delta": {"tool_calls": [{
+            "index": 0,
+            "id": "call_exec",
+            "function": {
+                "name": "exec_command",
+                "arguments": '{"cmd":"echo ok"}',
+            },
+        }]}}],
+    }))
+    events += event_payloads(translator.final_events())
+
+    completed = events[-1]
+    assert completed["type"] == "response.completed"
+    assert [item["type"] for item in completed["response"]["output"]] == [
+        "reasoning",
+        "message",
+        "function_call",
+    ]
+    assert [event["sequence_number"] for event in events] == list(range(len(events)))
+
+    reasoning_delta = next(
+        event for event in events
+        if event["type"] == "response.reasoning_summary_text.delta"
+    )
+    assert reasoning_delta["output_index"] == 0
+    text_delta = next(
+        event for event in events
+        if event["type"] == "response.output_text.delta"
+    )
+    assert text_delta["output_index"] == 1
+    assert text_delta["logprobs"] == []
+    tool_added = next(
+        event for event in events
+        if event["type"] == "response.output_item.added"
+        and event["item"]["type"] == "function_call"
+    )
+    assert tool_added["output_index"] == 2
+    args_delta = next(
+        event for event in events
+        if event["type"] == "response.function_call_arguments.delta"
+    )
+    assert args_delta["delta"] == '{"cmd":"echo ok"}'
+    assert args_delta["call_id"] == "call_exec"
+
+
+def test_stream_custom_tool_uses_custom_input_lifecycle():
+    adapter = ResponsesToolAdapter(
+        [RAW_TOOLS[2]],
+        codex_mode=True,
+        tool_mode="core",
+    )
+    translator = ResponsesStreamTranslator(
+        "resp_custom",
+        "deepseek-chat",
+        {},
+        tool_adapter=adapter,
+    )
+    events = translator.initial_events()
+    events += translator.feed_chat_chunk({"choices": [{"delta": {
+        "tool_calls": [{
+            "index": 0,
+            "id": "call_patch",
+            "function": {
+                "name": "apply_patch",
+                "arguments": '{"input":"*** Begin Patch"}',
+            },
+        }],
+    }}]})
+    events += translator.final_events()
+    payloads = event_payloads(events)
+    completed = payloads[-1]["response"]
+    assert completed["output"][0]["type"] == "custom_tool_call"
+    assert completed["output"][0]["input"] == "*** Begin Patch"
+    assert any(
+        event["type"] == "response.custom_tool_call_input.done"
+        for event in payloads
+    )
+    assert not any(
+        event["type"] == "response.function_call_arguments.done"
+        for event in payloads
+    )
+
+
+def test_mimo_query_too_long_maps_to_context_limit_without_poisoning():
+    adapter = object.__new__(MimoAdapter)
+    adapter.cookies = ""
+    with pytest.raises(UpstreamContextLimitError):
+        adapter._raise_event_error("query is too long")
+    assert _is_context_limit_error(UpstreamContextLimitError("query is too long"))
+
+
+def test_codex_responses_request_filters_tools_and_disables_web_search(monkeypatch):
+    captured = {}
+
+    async def fake_stream(*args, **kwargs):
+        captured["tools"] = [tool.function.name for tool in args[2]]
+        captured["search"] = kwargs["search_enabled"]
+
+        async def events():
+            yield 'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
+            yield 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(events(), media_type="text/event-stream")
+
+    monkeypatch.setattr(server, "_check_api_auth", lambda request: None)
+    monkeypatch.setattr(server, "_check_rate_limit", lambda request: {})
+    monkeypatch.setattr(server, "_handle_stream", fake_stream)
+    request = Request({
+        "type": "http",
+        "method": "POST",
+        "path": "/v1/responses",
+        "headers": [(b"user-agent", b"codex_cli_rs/0.80.0")],
+        "client": ("unit", 1),
+    })
+    req = server.ResponsesRequest(
+        model="deepseek-chat",
+        input="hello",
+        stream=True,
+        tools=RAW_TOOLS,
+    )
+    response = asyncio.run(server.responses(req, request))
+
+    async def consume():
+        return "".join([chunk async for chunk in response.body_iterator])
+
+    body = asyncio.run(consume())
+    assert "response.completed" in body
+    assert captured == {
+        "tools": ["exec_command", "apply_patch"],
+        "search": False,
+    }
+
+
+def test_codex_manifest_contains_context_and_catalog_contract():
+    manifest = server._build_codex_models_manifest()
+    entry = next(
+        item for item in manifest["models"]
+        if item["slug"] == "deepseek-chat"
+    )
+    assert entry["display_name"] == "DeepSeek Chat"
+    assert entry["context_window"] == 128_000
+    assert entry["max_context_window"] == 128_000
+    assert entry["supports_parallel_tool_calls"] is False
+    assert entry["supports_search_tool"] is False
+    assert entry["model_messages"]["instructions_template"] == ""
+
+
+def test_models_endpoint_returns_codex_manifest_for_catalog_request(monkeypatch):
+    monkeypatch.setattr(server, "_check_api_auth", lambda request: None)
+    monkeypatch.setattr(server, "_check_rate_limit", lambda request: {})
+    request = Request({
+        "type": "http",
+        "method": "GET",
+        "path": "/v1/models",
+        "query_string": b"client_version=0.164.0",
+        "headers": [(b"user-agent", b"codex_cli_rs/0.164.0")],
+        "client": ("unit", 1),
+    })
+    response = asyncio.run(server.list_models(request))
+    body = json.loads(response.body)
+    assert "models" in body
+    assert "data" not in body
+    assert any(item["slug"] == "deepseek-chat" for item in body["models"])
+
+
+def test_models_endpoint_keeps_openai_list_for_non_codex_clients(monkeypatch):
+    monkeypatch.setattr(server, "_check_api_auth", lambda request: None)
+    monkeypatch.setattr(server, "_check_rate_limit", lambda request: {})
+    request = Request({
+        "type": "http",
+        "method": "GET",
+        "path": "/v1/models",
+        "query_string": b"client_version=some-client",
+        "headers": [(b"user-agent", b"openai-python/1.0")],
+        "client": ("unit", 1),
+    })
+    response = asyncio.run(server.list_models(request))
+    body = json.loads(response.body)
+    assert "data" in body
+    assert "models" not in body
+
+
+def test_acquire_waits_for_a_busy_provider_account(monkeypatch):
+    released = []
+    account = SimpleNamespace(
+        id="wait-account",
+        provider="deepseek",
+        adapter=object(),
+    )
+    attempts = {"count": 0}
+    fake_pool = SimpleNamespace(
+        acquire=lambda provider=None: (
+            None if attempts.__setitem__("count", attempts["count"] + 1) is None
+            and attempts["count"] < 3
+            else account
+        ),
+        count=lambda provider=None: 1,
+        release=lambda item: released.append(item.id),
+    )
+    monkeypatch.setattr(server, "pool", fake_pool)
+    monkeypatch.setattr(server, "ACCOUNT_WAIT_SECS", 0.5)
+
+    started = time.monotonic()
+    acquired = server._acquire(provider="deepseek")
+    elapsed = time.monotonic() - started
+    acquired.release()
+
+    assert elapsed >= 0.15
+    assert released == ["wait-account"]

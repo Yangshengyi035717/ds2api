@@ -132,6 +132,10 @@ class UpstreamTransientError(UpstreamHintError):
     """
 
 
+class UpstreamContextLimitError(UpstreamHintError):
+    """The request exceeds the provider's prompt/context limit."""
+
+
 class RateLimitError(UpstreamHintError):
     """Upstream rate limiting (finish_reason ``rate_limit_reached``:
     '消息发送过于频繁，请稍后重试'). Maps to HTTP 429 on the server side."""
