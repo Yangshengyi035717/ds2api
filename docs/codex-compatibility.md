@@ -53,12 +53,15 @@ model_catalog_url = "https://dsapi.example.com/v1/models"
 `auto_compact_token_limit`：
 
 - 128K 上下文模型：64K 压缩阈值
-- MiMo 64K 上下文：40K 压缩阈值
+- MiMo 32K 输入预算：12K 压缩阈值。MiMo Web 自身还会注入约 19K token
+  的隐藏提示，因此 64K 甚至 1M 的 catalog 都会高估实际可用空间。
 - `effective_context_window_percent=85`
 - 工具输出按 `tokens` 截断，单项上限 10K
 
 如果旧线程已经超过硬上限，Codex 仍会要求新建线程或手动 `/compact`；
-自动压缩只对尚未耗尽且重新加载了模型目录的会话生效。
+自动压缩只对尚未耗尽且重新加载了模型目录的会话生效。Codex 请求不依赖客户端
+是否正确触发压缩：DS2API 会在每轮请求前截断超大工具调用参数，并按 provider
+预算合并旧对话。MiMo 为 12K，文心为 32K，DeepSeek/Kimi/GLM 等为 64K。
 
 ## Remote compaction v2
 
@@ -93,7 +96,8 @@ Codex -> AiMaMi /codex/router/v1 -> DS2API
 DeepSeek 标成 1,000,000，并输出 `auto_compact_token_limit=null`。这会让 Codex
 误以为离上下文上限很远。因此在 AiMaMi 中转设置中应覆盖模型上下文：
 
-- MiMo：48K–64K
+- MiMo：“上下文窗口”填 `32768`；当前 AiMaMi 不支持压缩阈值时，服务端仍会在
+  12K 安全预算处压缩工具调用参数和旧对话。
 - DeepSeek：96K–128K
 - Kimi / GLM / 其他 Web 上游：96K–128K
 
@@ -101,8 +105,8 @@ DeepSeek 标成 1,000,000，并输出 `auto_compact_token_limit=null`。这会�
 管理块之外设置一个保守回退值，例如当前使用 MiMo 时：
 
 ```toml
-model_context_window = 64000
-model_auto_compact_token_limit = 40000
+model_context_window = 32768
+model_auto_compact_token_limit = 12000
 ```
 
 Sub2API 在相同 AiMaMi catalog 条件下能工作，关键原因是 Sub2API 实现了

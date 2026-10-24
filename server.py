@@ -150,6 +150,20 @@ except ValueError:
     ACCOUNT_WAIT_SECS = 15.0
 ACCOUNT_WAIT_SECS = min(120.0, max(0.0, ACCOUNT_WAIT_SECS))
 MIMO_AUTH_MESSAGE = "MiMo 登录 Cookie 已失效，请重新导入"
+MIMO_CODEX_CONTEXT_WINDOW = 32_768
+MIMO_SAFE_PROMPT_TOKENS = 12_000
+MIMO_COMPACTION_PROMPT_CHARS = 24_000
+MIMO_COMPACTION_FALLBACK_CHARS = 12_000
+PROVIDER_SAFE_PROMPT_TOKENS = {
+    PROVIDER_MIMO: MIMO_SAFE_PROMPT_TOKENS,
+    "wenxin": 32_000,
+    "deepseek": 64_000,
+    "zai": 64_000,
+    "kimi": 64_000,
+    "qianwen": 64_000,
+    "hunyuan": 64_000,
+    "doubao": 64_000,
+}
 
 
 def _model_name() -> str:
@@ -1164,6 +1178,93 @@ def _build_prompt(messages: list[ChatMessage], tools: list[ToolDef] | None = Non
     return "\n".join(parts)
 
 
+def _truncate_middle(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    head_size = max(1, limit * 2 // 3)
+    tail_size = max(1, limit - head_size)
+    return (
+        text[:head_size]
+        + "\n[... truncated to fit the upstream context ...]\n"
+        + text[-tail_size:]
+    )
+
+
+def _compact_codex_messages(
+    messages: list[ChatMessage],
+    tools: list[ToolDef] | None,
+    tool_choice: str | dict | None,
+    *,
+    provider: str,
+) -> tuple[list[ChatMessage], str, dict[str, int]]:
+    """Fit Codex tool-loop history into a provider's usable prompt budget.
+
+    Codex repeats complete tool-call arguments, which can contain an entire
+    generated file. Those bytes are useful client-side, not as model context on
+    the next turn. Web providers also inject different hidden prompts, so each
+    provider gets a conservative local budget rather than trusting the client
+    catalog exclusively.
+    """
+    safe_tokens = PROVIDER_SAFE_PROMPT_TOKENS.get(provider, 64_000)
+    compacted = [message.model_copy(deep=True) for message in messages]
+    for message in compacted:
+        if message.role == "assistant":
+            if isinstance(message.content, str):
+                message.content = _truncate_middle(message.content, 4_000)
+            for tool_call in message.tool_calls or []:
+                tool_call.function.arguments = _truncate_middle(
+                    tool_call.function.arguments,
+                    1_200,
+                )
+        elif message.role == "tool":
+            message.content = _truncate_middle(_extract_text(message.content), 800)
+
+    prompt = _build_prompt(compacted, tools, tool_choice)
+    original_tokens = count_text(_build_prompt(messages, tools, tool_choice))
+    compacted_tokens = count_text(prompt)
+    if compacted_tokens <= safe_tokens:
+        return compacted, prompt, {
+            "original_tokens": original_tokens,
+            "compacted_tokens": compacted_tokens,
+            "dropped_messages": 0,
+        }
+
+    system_messages = [message for message in compacted if message.role == "system"]
+    dialogue = [message for message in compacted if message.role != "system"]
+    keep_tail = min(4, len(dialogue))
+    older = dialogue[:-keep_tail] if keep_tail else dialogue
+    recent = dialogue[-keep_tail:] if keep_tail else []
+    summary = ""
+    if older:
+        summary = compaction_fallback_summary(
+            [message.model_dump() for message in older],
+            max_chars=MIMO_COMPACTION_FALLBACK_CHARS,
+        )
+    summarized = list(system_messages)
+    if summary:
+        summarized.append(ChatMessage(
+            role="system",
+            content=f"Compacted prior conversation:\n{summary}",
+        ))
+    summarized.extend(recent)
+    prompt = _build_prompt(summarized, tools, tool_choice)
+    compacted_tokens = count_text(prompt)
+    if compacted_tokens > safe_tokens:
+        for message in summarized:
+            if message.role == "user":
+                message.content = _truncate_middle(
+                    _extract_text(message.content),
+                    12_000,
+                )
+        prompt = _build_prompt(summarized, tools, tool_choice)
+        compacted_tokens = count_text(prompt)
+    return summarized, prompt, {
+        "original_tokens": original_tokens,
+        "compacted_tokens": compacted_tokens,
+        "dropped_messages": max(0, len(dialogue) - len(recent)),
+    }
+
+
 # ---- OpenAI SSE helpers ----
 
 def _openai_chunk(proxy_id: str, content: str = "", finish: bool = False,
@@ -1318,7 +1419,7 @@ def _is_context_limit_error(error: Exception) -> bool:
 
 def _codex_context_window(provider: str) -> int:
     return {
-        PROVIDER_MIMO: 64_000,
+        PROVIDER_MIMO: MIMO_CODEX_CONTEXT_WINDOW,
         "wenxin": 64_000,
         "deepseek": 128_000,
         "zai": 128_000,
@@ -1333,8 +1434,9 @@ def _codex_auto_compact_token_limit(provider: str, context_window: int) -> int:
     # Codex needs an explicit threshold for custom models. Leave enough room
     # for the next response and tool output while compacting well before the
     # provider's hard context limit.
-    ratio = 5 / 8 if provider == PROVIDER_MIMO else 1 / 2
-    return max(16_000, min(64_000, int(context_window * ratio)))
+    if provider == PROVIDER_MIMO:
+        return min(12_000, max(8_000, int(context_window * 3 / 8)))
+    return max(16_000, min(64_000, int(context_window / 2)))
 
 
 def _codex_model_manifest_entry(name: str) -> dict[str, Any]:
@@ -1980,11 +2082,33 @@ async def responses(req: ResponsesRequest, request: Request):
             not codex_request or _env_truthy("CODEX_WEB_SEARCH_ENABLED", False)
         )),
     )
-    prompt = _build_prompt(
-        messages,
-        tools or None,
-        tool_adapter.adapt_tool_choice(req.tool_choice),
-    )
+    adapted_tool_choice = tool_adapter.adapt_tool_choice(req.tool_choice)
+    if codex_request or tools:
+        messages, prompt, prompt_metrics = _compact_codex_messages(
+            messages,
+            tools or None,
+            adapted_tool_choice,
+            provider=provider,
+        )
+        if prompt_metrics["dropped_messages"] or (
+            prompt_metrics["compacted_tokens"]
+            != prompt_metrics["original_tokens"]
+        ):
+            log.info(
+                "codex_prompt_compacted",
+                extra={
+                    "provider": provider,
+                    "original_tokens": prompt_metrics["original_tokens"],
+                    "compacted_tokens": prompt_metrics["compacted_tokens"],
+                    "dropped_messages": prompt_metrics["dropped_messages"],
+                },
+            )
+    else:
+        prompt = _build_prompt(
+            messages,
+            tools or None,
+            adapted_tool_choice,
+        )
 
     conversation_id = request.headers.get("X-Conversation-Id", "").strip()
     if conversation_id:
@@ -2010,7 +2134,14 @@ async def responses(req: ResponsesRequest, request: Request):
                 candidate = await run_in_threadpool(
                     _handle_nonstream,
                     response_id,
-                    compaction_prompt(raw_messages),
+                    compaction_prompt(
+                        raw_messages,
+                        max_chars=(
+                            MIMO_COMPACTION_PROMPT_CHARS
+                            if provider == PROVIDER_MIMO
+                            else 48_000
+                        ),
+                    ),
                     None,
                     model_type=model_type,
                     thinking_mode=False,

@@ -25,6 +25,11 @@
   output item，并兼容 `/v1/responses/compact` 别名；摘要通过版本化的
   `encrypted_content` 在下一轮恢复。模型目录必须给出有限的
   `auto_compact_token_limit`，否则自定义模型不会自动压缩。
+- MiMo Web 会额外注入约 19K token 的隐藏提示；Codex 首轮本地 11.7K token
+  可成功，但下一轮重复完整工具参数后会触发 `query is too long`。因此 MiMo
+  catalog 使用 32K 上下文、12K 压缩阈值，`_compact_codex_messages()` 还会在
+  发送前截断超大工具参数并摘要旧对话，不能只依赖客户端 catalog。该预算层对
+  所有 Codex provider 生效：文心 32K，其余大上下文 Web 上游 64K。
 
 - 新增 `provider=mimo`（小米 MiMo Studio），公开模型为 `mimo-v2.6-pro`、
   `mimo-v2.6-flash` 和 `mimo-v2.6-pro-ultraspeed-studio`。账号、代理、导入、保活、

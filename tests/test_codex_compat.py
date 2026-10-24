@@ -21,7 +21,12 @@ from responses_format import (
     input_to_chat_messages,
     tools_to_chat_tools,
 )
-from server import _is_context_limit_error
+from server import (
+    MIMO_CODEX_CONTEXT_WINDOW,
+    MIMO_SAFE_PROMPT_TOKENS,
+    _is_context_limit_error,
+    _compact_codex_messages,
+)
 import server
 
 
@@ -424,8 +429,92 @@ def test_codex_manifest_contains_context_and_catalog_contract():
         item for item in manifest["models"]
         if item["slug"] == "mimo-v2.6-pro-ultraspeed-studio"
     )
-    assert mimo["context_window"] == 64_000
-    assert mimo["auto_compact_token_limit"] == 40_000
+    assert mimo["context_window"] == MIMO_CODEX_CONTEXT_WINDOW
+    assert mimo["auto_compact_token_limit"] == 12_000
+
+
+def test_codex_prompt_compacts_large_tool_call_arguments():
+    messages = [
+        server.ChatMessage(role="system", content="System instructions."),
+        server.ChatMessage(role="user", content="Create the animation."),
+        server.ChatMessage(
+            role="assistant",
+            content="",
+            tool_calls=[server.ToolCall(
+                id="call_write",
+                function=server.FunctionCall(
+                    name="exec_command",
+                    arguments='{"cmd":"' + ("x" * 40_000) + '"}',
+                ),
+            )],
+        ),
+        server.ChatMessage(
+            role="tool",
+            tool_call_id="call_write",
+            content="File created.",
+        ),
+        server.ChatMessage(role="user", content="Continue with the next step."),
+    ]
+
+    compacted, prompt, metrics = _compact_codex_messages(
+        messages,
+        None,
+        None,
+        provider="mimo",
+    )
+
+    assert metrics["original_tokens"] > metrics["compacted_tokens"]
+    assert metrics["compacted_tokens"] <= MIMO_SAFE_PROMPT_TOKENS
+    assert "truncated to fit the upstream context" in prompt
+    assert "Continue with the next step." in prompt
+    argument = compacted[2].tool_calls[0].function.arguments
+    assert len(argument) < 2_000
+
+
+def test_codex_prompt_summarizes_older_dialogue_over_budget():
+    messages = [server.ChatMessage(role="system", content="System instructions.")]
+    for index in range(12):
+        messages.append(server.ChatMessage(
+            role="user",
+            content=f"older-{index} " + ("u" * 8_000),
+        ))
+        messages.append(server.ChatMessage(
+            role="assistant",
+            content=f"answer-{index} " + ("a" * 8_000),
+        ))
+    messages.append(server.ChatMessage(
+        role="user",
+        content="Keep this latest request.",
+    ))
+
+    compacted, prompt, metrics = _compact_codex_messages(
+        messages,
+        None,
+        None,
+        provider="mimo",
+    )
+
+    assert metrics["dropped_messages"] > 0
+    assert metrics["compacted_tokens"] <= MIMO_SAFE_PROMPT_TOKENS
+    assert "Compacted prior conversation:" in prompt
+    assert "Keep this latest request." in prompt
+
+
+def test_large_context_provider_keeps_larger_budget():
+    messages = [
+        server.ChatMessage(role="system", content="System instructions."),
+        server.ChatMessage(role="user", content="u" * 80_000),
+    ]
+
+    _, _, metrics = _compact_codex_messages(
+        messages,
+        None,
+        None,
+        provider="deepseek",
+    )
+
+    assert metrics["compacted_tokens"] > MIMO_SAFE_PROMPT_TOKENS
+    assert metrics["compacted_tokens"] <= 64_000
 
 
 def test_models_endpoint_returns_codex_manifest_for_catalog_request(monkeypatch):
