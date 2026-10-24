@@ -143,3 +143,9 @@ npm --prefix "webui-new" run build
   返回“服务器繁忙”或中途断流。适配器默认自动降级到同账号的
   `mimo-v2.6-pro`（`MIMO_ULTRASPEED_FALLBACK_MODEL` 可覆盖）；一旦已经开始
   输出则不重试，避免重复正文或重复工具调用。
+- 首次 fastchat 瞬态失败后会进入默认 300 秒冷却期，后续请求直接使用
+  `mimo-v2.6-pro`，避免每个工具回合都先等待一次坏通道失败。冷却时间可通过
+  `MIMO_FASTCHAT_COOLDOWN_SECS` 调整。
+- Codex 请求只要携带工具，公开模型仍显示 UltraSpeed，但上游直接路由到
+  `mimo-v2.6-pro`。UltraSpeed fastchat 仅用于不带工具的普通聊天，避免长文件
+  写入参数在 fastchat 流中断。

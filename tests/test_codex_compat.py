@@ -409,6 +409,44 @@ def test_codex_responses_request_filters_tools_and_disables_web_search(monkeypat
     }
 
 
+def test_codex_mimo_tool_request_routes_ultraspeed_to_pro(monkeypatch):
+    captured = {}
+
+    async def fake_stream(*args, **kwargs):
+        captured["upstream_model"] = kwargs["upstream_model"]
+
+        async def events():
+            yield 'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
+            yield 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(events(), media_type="text/event-stream")
+
+    monkeypatch.setattr(server, "_check_api_auth", lambda request: None)
+    monkeypatch.setattr(server, "_check_rate_limit", lambda request: {})
+    monkeypatch.setattr(server, "_handle_stream", fake_stream)
+    request = Request({
+        "type": "http",
+        "method": "POST",
+        "path": "/v1/responses",
+        "headers": [(b"user-agent", b"codex_cli_rs/0.164.0")],
+        "client": ("unit", 1),
+    })
+    req = server.ResponsesRequest(
+        model="mimo-v2.6-pro-ultraspeed-studio",
+        input="write a file",
+        stream=True,
+        tools=[RAW_TOOLS[0]],
+    )
+    response = asyncio.run(server.responses(req, request))
+
+    async def consume():
+        return "".join([chunk async for chunk in response.body_iterator])
+
+    asyncio.run(consume())
+    assert captured["upstream_model"] == "mimo-v2.6-pro"
+
+
 def test_codex_manifest_contains_context_and_catalog_contract():
     manifest = server._build_codex_models_manifest()
     entry = next(

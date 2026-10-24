@@ -46,7 +46,11 @@
   不能把 `<think>` 或 NUL 分隔符返回给客户端。
 - UltraSpeed 的 fastchat 通道不可用时可能返回“服务器繁忙”；适配器在零输出时
   自动降级到同账号 `mimo-v2.6-pro`，已产生任何 reasoning/正文后禁止重试，
-  避免重复内容和重复工具调用。
+  避免重复内容和重复工具调用。首次瞬态失败后进入默认 300 秒冷却，后续请求
+  直接走 Pro，避免每个 Codex 工具回合都先踩一次坏通道。
+- Codex 携带工具的请求对 MiMo UltraSpeed 采用确定性路由：响应模型名保持
+  UltraSpeed，上游直接使用 `mimo-v2.6-pro`。fastchat 只承担无工具的普通聊天，
+  防止长文件写入的 DSML 工具参数在 fastchat 中断流。
 - MiMo 保活调用只读 `POST /open-apis/chat/conversation/list`，仅验证登录和保存实际轮换的
   Cookie；尚未证明独立刷新 serviceToken 的协议，不宣称可无限续期。
   脱敏 HAR 可能没有 Cookie，需提示补充，不能用抓包中的会话 ID 或匿名状态当成功。

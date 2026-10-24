@@ -76,6 +76,7 @@ class Client:
 @pytest.fixture
 def adapter(monkeypatch):
     monkeypatch.setattr(module.cffi_requests, "Session", Client)
+    monkeypatch.setattr(module, "_fastchat_unavailable_until", 0.0)
     instance = MimoAdapter(cookies=COOKIES, proxy="http://unit-proxy:8080")
     yield instance
     instance.close()
@@ -246,6 +247,37 @@ def test_ultraspeed_transient_failure_falls_back_to_regular_model(adapter):
     assert adapter._client.calls[-1][1]["json"]["modelConfig"]["model"] == (
         module.ULTRASPEED_FALLBACK_MODEL
     )
+
+
+def test_ultraspeed_opens_circuit_after_transient_failure(adapter):
+    adapter._client.responses.extend([
+        Response(status=503),
+        Response(events=[
+            ("message", {"messageType": "assistant", "content": "first fallback"}),
+            ("finish", {"content": "[DONE]"}),
+        ]),
+        Response(events=[
+            ("message", {"messageType": "assistant", "content": "second direct"}),
+            ("finish", {"content": "[DONE]"}),
+        ]),
+    ])
+
+    assert adapter.chat(
+        "session-1",
+        "first",
+        upstream_model="mimo-v2.6-pro-ultraspeed-studio",
+    ) == ("first fallback", "")
+    assert adapter.chat(
+        "session-2",
+        "second",
+        upstream_model="mimo-v2.6-pro-ultraspeed-studio",
+    ) == ("second direct", "")
+
+    assert [call[0] for call in adapter._client.calls] == [
+        module.FASTCHAT_COMPLETION_URL,
+        module.COMPLETION_URL,
+        module.COMPLETION_URL,
+    ]
 
 
 def test_ultraspeed_falls_back_after_reasoning_only_failure(adapter):

@@ -133,7 +133,11 @@ from qwen_adapter import QwenAuthError
 from hunyuan_adapter import HunyuanAuthError
 from wenxin_adapter import WenxinAuthError
 from doubao_adapter import DoubaoAuthError
-from mimo_adapter import MimoAuthError
+from mimo_adapter import (
+    FASTCHAT_MODELS,
+    ULTRASPEED_FALLBACK_MODEL,
+    MimoAuthError,
+)
 
 load_dotenv()
 configure_from_env()
@@ -2097,6 +2101,21 @@ async def responses(req: ResponsesRequest, request: Request):
     provider = provider_for_model(req.model)
     public_model = _public_model_for_request(req.model, provider)
     upstream_model = _upstream_model_for_request(public_model, provider)
+    if (
+        provider == PROVIDER_MIMO
+        and codex_request
+        and tools
+        and upstream_model.lower() in FASTCHAT_MODELS
+        and ULTRASPEED_FALLBACK_MODEL
+    ):
+        log.info(
+            "mimo_codex_tool_fallback",
+            extra={
+                "requested_model": upstream_model,
+                "upstream_model": ULTRASPEED_FALLBACK_MODEL,
+            },
+        )
+        upstream_model = ULTRASPEED_FALLBACK_MODEL
     model_type, thinking, search = resolve_model_controls(
         decision,
         req_thinking=requested_thinking(req.reasoning),

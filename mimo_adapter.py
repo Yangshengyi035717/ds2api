@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+import time
 import uuid
 from typing import Any
 from urllib.parse import quote
@@ -30,8 +32,14 @@ ULTRASPEED_FALLBACK_MODEL = os.environ.get(
     "MIMO_ULTRASPEED_FALLBACK_MODEL",
     "mimo-v2.6-pro",
 ).strip()
+FASTCHAT_COOLDOWN_SECS = max(
+    30,
+    int(os.environ.get("MIMO_FASTCHAT_COOLDOWN_SECS", "300") or 300),
+)
 IMPERSONATE = os.environ.get("MIMO_IMPERSONATE", "chrome150")
 REQUIRED_COOKIES = ("userId", "xiaomichatbot_serviceToken", "xiaomichatbot_ph")
+_fastchat_unavailable_until = 0.0
+_fastchat_state_lock = threading.Lock()
 
 
 class MimoAuthError(RuntimeError):
@@ -451,19 +459,33 @@ class MimoAdapter:
             upstream_model or mimo_model_name()
         )
         tagged_content = requested_model.lower() in FASTCHAT_MODELS
-        attempts = [(
-            FASTCHAT_COMPLETION_URL if tagged_content else COMPLETION_URL,
-            requested_model,
-            tagged_content,
-        )]
-        if (
+        fallback_model = (
+            mimo_upstream_model(ULTRASPEED_FALLBACK_MODEL)
+            if ULTRASPEED_FALLBACK_MODEL
+            else ""
+        )
+        fallback_available = (
             tagged_content
-            and ULTRASPEED_FALLBACK_MODEL
-            and ULTRASPEED_FALLBACK_MODEL.lower() != requested_model.lower()
-        ):
+            and bool(fallback_model)
+            and fallback_model.lower() != requested_model.lower()
+        )
+        global _fastchat_unavailable_until
+        with _fastchat_state_lock:
+            fastchat_blocked = (
+                fallback_available
+                and time.monotonic() < _fastchat_unavailable_until
+            )
+        attempts = []
+        if not fastchat_blocked:
+            attempts.append((
+                FASTCHAT_COMPLETION_URL if tagged_content else COMPLETION_URL,
+                requested_model,
+                tagged_content,
+            ))
+        if fallback_available:
             attempts.append((
                 COMPLETION_URL,
-                mimo_upstream_model(ULTRASPEED_FALLBACK_MODEL),
+                fallback_model,
                 False,
             ))
 
@@ -499,8 +521,16 @@ class MimoAdapter:
                 if buffered_reasoning:
                     for reasoning in buffered_reasoning:
                         yield reasoning
+                if tagged:
+                    with _fastchat_state_lock:
+                        _fastchat_unavailable_until = 0.0
                 return
             except UpstreamTransientError:
+                if tagged and not emitted_to_client:
+                    with _fastchat_state_lock:
+                        _fastchat_unavailable_until = (
+                            time.monotonic() + FASTCHAT_COOLDOWN_SECS
+                        )
                 if emitted_to_client or index == len(attempts) - 1:
                     raise
 
