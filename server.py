@@ -1204,6 +1204,89 @@ def _truncate_middle(text: str, limit: int) -> str:
     )
 
 
+_LOCAL_ACTION_MARKERS = (
+    "创建",
+    "新建",
+    "写入",
+    "保存",
+    "生成",
+    "实现",
+    "做一个",
+    "做个",
+    "写一个",
+    "修改",
+    "编辑",
+    "修复",
+    "重构",
+    "create",
+    "write",
+    "save",
+    "generate",
+    "implement",
+    "build",
+    "edit",
+    "modify",
+    "refactor",
+    "fix",
+)
+_FILE_WRITE_MARKERS = (
+    "set-content",
+    "out-file",
+    "add-content",
+    "write_text",
+    "write_bytes",
+    "apply_patch",
+    "cat >",
+    "tee ",
+    "new-item -itemtype file",
+)
+_TOOL_FAILURE_MARKERS = (
+    "error",
+    "failed",
+    "exception",
+    "not found",
+    "exit code 1",
+    "失败",
+    "错误",
+    "拒绝",
+)
+
+
+def _requires_local_file_action(messages: list[ChatMessage]) -> bool:
+    """True until a write-like Codex tool call has a successful output."""
+    latest_user = ""
+    for message in reversed(messages):
+        if message.role == "user":
+            latest_user = _extract_text(message.content).lower()
+            break
+    if not latest_user or not any(
+        marker in latest_user for marker in _LOCAL_ACTION_MARKERS
+    ):
+        return False
+
+    tool_outputs = {
+        message.tool_call_id: _extract_text(message.content).lower()
+        for message in messages
+        if message.role == "tool" and message.tool_call_id
+    }
+    for message in messages:
+        if message.role != "assistant":
+            continue
+        for tool_call in message.tool_calls or []:
+            action = (
+                f"{tool_call.function.name} "
+                f"{tool_call.function.arguments}"
+            ).lower()
+            if not any(marker in action for marker in _FILE_WRITE_MARKERS):
+                continue
+            output = tool_outputs.get(tool_call.id, "")
+            if output and not any(
+                marker in output for marker in _TOOL_FAILURE_MARKERS
+            ):
+                return False
+    return True
+
+
 def _compact_codex_messages(
     messages: list[ChatMessage],
     tools: list[ToolDef] | None,
@@ -2140,6 +2223,16 @@ async def responses(req: ResponsesRequest, request: Request):
         )),
     )
     adapted_tool_choice = tool_adapter.adapt_tool_choice(req.tool_choice)
+    if (
+        codex_request
+        and tools
+        and _requires_local_file_action(messages)
+    ):
+        adapted_tool_choice = "required"
+        log.info(
+            "codex_local_file_tool_required",
+            extra={"provider": provider},
+        )
     if codex_request or tools:
         messages, prompt, prompt_metrics = _compact_codex_messages(
             messages,

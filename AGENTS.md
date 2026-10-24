@@ -33,6 +33,9 @@
 - 携带工具的 Codex 请求必须注入 `CODEX_LOCAL_TOOL_GUARD`：工具在用户本机
   工作区执行，创建/编辑文件必须先调用工具，不得声称运行在云端或让用户复制、
   下载完整源码；大文件按约 8K 字符分块写入，避免工具参数导致的流中断。
+- 用户要求创建/修改文件且历史中没有成功写文件调用时，`responses()` 必须把
+  `tool_choice` 提升为 `required`；DSML 提示要声明这些才是唯一可执行工具，
+  忽略 MiMo 等 provider 自带的 search/scrape 原生工具。
 
 - 新增 `provider=mimo`（小米 MiMo Studio），公开模型为 `mimo-v2.6-pro`、
   `mimo-v2.6-flash` 和 `mimo-v2.6-pro-ultraspeed-studio`。账号、代理、导入、保活、

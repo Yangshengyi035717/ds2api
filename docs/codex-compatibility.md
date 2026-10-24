@@ -65,6 +65,9 @@ model_catalog_url = "https://dsapi.example.com/v1/models"
 携带工具的 Codex 请求还会注入本地执行约束：工具在当前用户电脑的工作区运行，
 创建或编辑文件必须调用工具；禁止把整份文件作为聊天正文让用户下载或手工保存。
 大文件要求按约 8K 字符分块写入，避免单次工具参数过大导致流中断。
+若用户明确要求创建/修改文件，而历史中尚不存在成功的写文件工具调用，DS2API
+会强制 `tool_choice=required`。DSML 提示同时声明列表中的工具是唯一可执行工具，
+要求忽略模型供应商自带的 search/scrape 等原生工具。
 
 ## Remote compaction v2
 

@@ -266,7 +266,10 @@ def build_dsml_tool_prompt(tools: list[dict], tool_choice: str | dict | None = N
                 f"Do not call any other tool and do not answer the user directly.\n\n"
             )
 
-    prompt = """You have access to tools. When you need to call a tool, respond with EXACTLY this format — no markdown fences, no extra text before or after:
+    prompt = """The tools listed below are the ONLY client-executable tools for this request.
+Ignore any native/built-in search, scrape, or similarly named tools injected by the model provider.
+When the task requires creating/editing files, running commands, or otherwise using one of these tools, emit a DSML tool call immediately.
+Respond with EXACTLY this format — no markdown fences, no extra text before or after:
 
 <|DSML|tool_calls>
   <|DSML|invoke name="TOOL_NAME">
@@ -275,13 +278,13 @@ def build_dsml_tool_prompt(tools: list[dict], tool_choice: str | dict | None = N
 </|DSML|tool_calls>
 
 RULES:
+- Only the tools listed at the end of this message are available
 - Use <|DSML|tool_calls> wrapper with one or more <|DSML|invoke> entries
 - Tool name in invoke name attribute
 - String values MUST use <![CDATA[...]]>
 - Numbers, booleans, null stay plain text
 - First non-whitespace character must be < for tool calls
 - NO explanations, NO markdown fences, NO extra text
-
 """ + choice_instruction + "Available tools:\n"
     for tool in tools:
         fn = tool.get("function", {})

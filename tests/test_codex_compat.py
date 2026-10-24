@@ -24,6 +24,7 @@ from responses_format import (
 from server import (
     MIMO_CODEX_CONTEXT_WINDOW,
     MIMO_SAFE_PROMPT_TOKENS,
+    _requires_local_file_action,
     _is_context_limit_error,
     _compact_codex_messages,
 )
@@ -534,6 +535,50 @@ def test_codex_tool_guard_requires_local_file_operations():
     assert "operating on the user's local Codex machine" in prompt
     assert "MUST call the appropriate tool" in prompt
     assert "multiple chunks" in prompt
+
+
+def test_local_file_action_stays_required_until_write_succeeds():
+    messages = [
+        server.ChatMessage(role="system", content="System instructions."),
+        server.ChatMessage(role="user", content="创建一个 snake.html 文件"),
+        server.ChatMessage(
+            role="assistant",
+            content="",
+            tool_calls=[server.ToolCall(
+                id="call_read",
+                function=server.FunctionCall(
+                    name="exec_command",
+                    arguments='{"cmd":"Get-ChildItem"}',
+                ),
+            )],
+        ),
+        server.ChatMessage(
+            role="tool",
+            tool_call_id="call_read",
+            content="outputs",
+        ),
+    ]
+    assert _requires_local_file_action(messages)
+
+    messages.extend([
+        server.ChatMessage(
+            role="assistant",
+            content="",
+            tool_calls=[server.ToolCall(
+                id="call_write",
+                function=server.FunctionCall(
+                    name="exec_command",
+                    arguments='{"cmd":"Set-Content snake.html ..."}',
+                ),
+            )],
+        ),
+        server.ChatMessage(
+            role="tool",
+            tool_call_id="call_write",
+            content="Process exited with code 0",
+        ),
+    ])
+    assert not _requires_local_file_action(messages)
 
 
 def test_codex_prompt_summarizes_older_dialogue_over_budget():
