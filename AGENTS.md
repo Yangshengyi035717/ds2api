@@ -36,6 +36,9 @@
 - 用户要求创建/修改文件且历史中没有成功写文件调用时，`responses()` 必须把
   `tool_choice` 提升为 `required`；DSML 提示要声明这些才是唯一可执行工具，
   忽略 MiMo 等 provider 自带的 search/scrape 原生工具。
+- z.ai / GLM 必须使用普通 `chat` 模式，禁止 `general_agent`：后者启用 Z.ai
+  云端 Agent 沙盒及 `/home/z/my-project` 路径，并会拒绝 Codex 本地工具说明。
+  普通 chat 仍支持 thinking，并能遵循需要文件动作的 DSML 工具调用。
 
 - 新增 `provider=mimo`（小米 MiMo Studio），公开模型为 `mimo-v2.6-pro`、
   `mimo-v2.6-flash` 和 `mimo-v2.6-pro-ultraspeed-studio`。账号、代理、导入、保活、

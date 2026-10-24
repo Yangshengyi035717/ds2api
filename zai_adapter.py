@@ -271,24 +271,7 @@ class ZaiAdapter:
                     "currentId": user_message_id,
                 },
                 "tags": [],
-                "flags": ["general_agent"],
-                "features": [
-                    {
-                        "server": "web_search_h",
-                        "status": "hidden",
-                        "type": "web_search",
-                    },
-                    {
-                        "server": "tool_selector_h",
-                        "status": "hidden",
-                        "type": "tool_selector",
-                    },
-                    {
-                        "server": "hidden-thinking",
-                        "status": "hidden",
-                        "type": "hidden-thinking",
-                    },
-                ],
+                "features": [],
                 "mcp_servers": [],
                 "enable_thinking": bool(thinking_enabled),
                 **(
@@ -300,7 +283,7 @@ class ZaiAdapter:
                 "message_version": 1,
                 "extra": {},
                 "timestamp": timestamp_ms,
-                "type": "general_agent",
+                "type": "chat",
             }
         }
         headers = {
@@ -419,7 +402,7 @@ class ZaiAdapter:
                 "web_search": bool(search),
                 "auto_web_search": False,
                 "preview_mode": False,
-                "flags": ["general_agent"],
+                "flags": [],
                 "vlm_tools_enable": False,
                 "vlm_web_search_enable": False,
                 "vlm_website_mode": False,

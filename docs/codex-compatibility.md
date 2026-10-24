@@ -69,6 +69,11 @@ model_catalog_url = "https://dsapi.example.com/v1/models"
 会强制 `tool_choice=required`。DSML 提示同时声明列表中的工具是唯一可执行工具，
 要求忽略模型供应商自带的 search/scrape 等原生工具。
 
+GLM / z.ai 必须使用普通 `chat` 会话，而不能使用 `general_agent`。后者会让模型
+进入 Z.ai 自带云端 Agent 沙盒，获得 `/home/z/my-project`、Bash/Write 等另一套
+工具，并把 Codex 的本地工具说明当成不可信注入。普通 chat 模式保留 thinking，
+同时能正确执行 Codex 注入的 DSML 工具协议。
+
 ## Remote compaction v2
 
 Codex 的自动压缩请求仍是 `POST /v1/responses`，但会在 `input` 末尾附加：

@@ -160,6 +160,9 @@ def test_zai_session_creation_reuses_server_message_ids():
     user_message_id = create_body["history"]["currentId"]
     assert create_body["models"] == ["x-preview-l"]
     assert create_body["enable_thinking"] is True
+    assert create_body["type"] == "chat"
+    assert create_body["features"] == []
+    assert "flags" not in create_body
 
     assert list(
         adapter.chat_stream(
@@ -173,6 +176,7 @@ def test_zai_session_creation_reuses_server_message_ids():
     assert completion_body["model"] == "x-preview-l"
     assert completion_body["current_user_message_id"] == user_message_id
     assert completion_body["id"] != user_message_id
+    assert completion_body["features"]["flags"] == []
 
 
 def test_zai_stream_separates_thinking_and_answer():
