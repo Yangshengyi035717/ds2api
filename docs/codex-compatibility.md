@@ -62,6 +62,9 @@ model_catalog_url = "https://dsapi.example.com/v1/models"
 自动压缩只对尚未耗尽且重新加载了模型目录的会话生效。Codex 请求不依赖客户端
 是否正确触发压缩：DS2API 会在每轮请求前截断超大工具调用参数，并按 provider
 预算合并旧对话。MiMo 为 12K，文心为 32K，DeepSeek/Kimi/GLM 等为 64K。
+携带工具的 Codex 请求还会注入本地执行约束：工具在当前用户电脑的工作区运行，
+创建或编辑文件必须调用工具；禁止把整份文件作为聊天正文让用户下载或手工保存。
+大文件要求按约 8K 字符分块写入，避免单次工具参数过大导致流中断。
 
 ## Remote compaction v2
 

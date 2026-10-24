@@ -158,6 +158,16 @@ MIMO_CODEX_CONTEXT_WINDOW = 32_768
 MIMO_SAFE_PROMPT_TOKENS = 12_000
 MIMO_COMPACTION_PROMPT_CHARS = 24_000
 MIMO_COMPACTION_FALLBACK_CHARS = 8_000
+CODEX_LOCAL_TOOL_GUARD = (
+    "You are operating on the user's local Codex machine, not a cloud sandbox "
+    "or download service. exec_command and apply_patch execute locally in the "
+    "current workspace. For requests that create or edit files, you MUST call "
+    "the appropriate tool before answering; do not paste the complete file in "
+    "chat and do not ask the user to download or manually save it unless a real "
+    "tool call failed. For large files, write them in multiple chunks of about "
+    "8K characters or less so one tool-call argument never becomes excessively "
+    "large."
+)
 PROVIDER_SAFE_PROMPT_TOKENS = {
     PROVIDER_MIMO: MIMO_SAFE_PROMPT_TOKENS,
     "wenxin": 32_000,
@@ -1200,6 +1210,7 @@ def _compact_codex_messages(
     tool_choice: str | dict | None,
     *,
     provider: str,
+    codex_mode: bool = False,
 ) -> tuple[list[ChatMessage], str, dict[str, int]]:
     """Fit Codex tool-loop history into a provider's usable prompt budget.
 
@@ -1211,6 +1222,11 @@ def _compact_codex_messages(
     """
     safe_tokens = PROVIDER_SAFE_PROMPT_TOKENS.get(provider, 64_000)
     compacted = [message.model_copy(deep=True) for message in messages]
+    if codex_mode and tools:
+        compacted.insert(0, ChatMessage(
+            role="system",
+            content=CODEX_LOCAL_TOOL_GUARD,
+        ))
     for message in compacted:
         if message.role == "assistant":
             if isinstance(message.content, str):
@@ -2130,6 +2146,7 @@ async def responses(req: ResponsesRequest, request: Request):
             tools or None,
             adapted_tool_choice,
             provider=provider,
+            codex_mode=codex_request,
         )
         if prompt_metrics["dropped_messages"] or (
             prompt_metrics["compacted_tokens"]

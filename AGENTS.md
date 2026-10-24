@@ -30,6 +30,9 @@
   catalog 使用 32K 上下文、12K 压缩阈值，`_compact_codex_messages()` 还会在
   发送前截断超大工具参数并摘要旧对话，不能只依赖客户端 catalog。该预算层对
   所有 Codex provider 生效：文心 32K，其余大上下文 Web 上游 64K。
+- 携带工具的 Codex 请求必须注入 `CODEX_LOCAL_TOOL_GUARD`：工具在用户本机
+  工作区执行，创建/编辑文件必须先调用工具，不得声称运行在云端或让用户复制、
+  下载完整源码；大文件按约 8K 字符分块写入，避免工具参数导致的流中断。
 
 - 新增 `provider=mimo`（小米 MiMo Studio），公开模型为 `mimo-v2.6-pro`、
   `mimo-v2.6-flash` 和 `mimo-v2.6-pro-ultraspeed-studio`。账号、代理、导入、保活、

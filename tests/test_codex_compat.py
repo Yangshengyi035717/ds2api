@@ -509,6 +509,33 @@ def test_codex_prompt_compacts_large_tool_call_arguments():
     assert len(argument) < 2_000
 
 
+def test_codex_tool_guard_requires_local_file_operations():
+    messages = [
+        server.ChatMessage(role="system", content="System instructions."),
+        server.ChatMessage(role="user", content="Create snake.html."),
+    ]
+    tools = [server.ToolDef(
+        type="function",
+        function=server.FunctionDef(
+            name="exec_command",
+            description="Run a command",
+            parameters={"type": "object"},
+        ),
+    )]
+
+    _, prompt, _ = _compact_codex_messages(
+        messages,
+        tools,
+        "auto",
+        provider="mimo",
+        codex_mode=True,
+    )
+
+    assert "operating on the user's local Codex machine" in prompt
+    assert "MUST call the appropriate tool" in prompt
+    assert "multiple chunks" in prompt
+
+
 def test_codex_prompt_summarizes_older_dialogue_over_budget():
     messages = [server.ChatMessage(role="system", content="System instructions.")]
     for index in range(12):
